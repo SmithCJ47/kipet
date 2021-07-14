@@ -178,26 +178,29 @@ class PlotObject:
         fig.update_layout(title_font=plot_options['title_font'])
         fig.update_layout(legend_font=plot_options['label_font'])
         
-        filename = f'{plot_name}.html'
+        filename = f'{plot_name}'
         # Change the folder directory
             
         stem = self.reaction_model.file.stem
         
+        print(self.jupyter)
+
         if self.jupyter:
             chart_dir = Path.cwd().joinpath('results', f'{stem}-{self.folder_name}' , 'charts', f'{self.name}')
-            plot_method = pio.show
-            fig.update_layout(         
-                autosize=False,
-                width=1200,
-                height=800,
-                margin=dict(
-                    l=50,
-                    r=50,
-                    b=50,
-                    t=50,
-                    pad=4
-                    ),
-                )
+            print(f'The plot dir is: {chart_dir}')
+            plot_method = pio.write_html
+            # fig.update_layout(         
+            #     autosize=False,
+            #     width=1200,
+            #     height=800,
+            #     margin=dict(
+            #         l=50,
+            #         r=50,
+            #         b=50,
+            #         t=50,
+            #         pad=4
+            #         ),
+            #     )
         else:
         
             calling_file_name = os.path.dirname(os.path.realpath(sys.argv[0]))
@@ -205,20 +208,22 @@ class PlotObject:
             plot_method = pio.write_html
         
         chart_dir.mkdir(parents=True, exist_ok=True)
-        filename = chart_dir.joinpath(filename)
-        #if not self.jupyter:
-        #   print(f'Plot saved as: {filename}')
+        filename_html = chart_dir.joinpath(filename).as_posix() + '.html'
+        #f not self.jupyter:
+        
+        print(f'Plot saved as: {filename_html}')
            
         self.save_static_image = True
         if self.save_static_image:
-            fig.write_image(f'{filename}.svg', width=1400, height=900)
+            filename_svg = chart_dir.joinpath(filename).as_posix() + '.svg'
+            fig.write_image(filename_svg, width=1400, height=900)
 
         plot_method(fig,
-                    file=filename.as_posix(),
+                    file=filename_html,
                     auto_open=self.show,
                     include_plotlyjs='cdn')
     
-        return filename
+        return chart_dir.joinpath(filename).as_posix()
 
     def _state_plot(self, fig, var, pred, exp, use_spectral_format=False):
         """Generic method to plot state profiles

@@ -250,6 +250,8 @@ class Report:
         from kipet import __version__ as version
         model_dict = {}
         all_names = [rm.name for rm in self.reactions]
+
+        suffix = '.html' # '.svg'
     
         user_file = self.reactions[0].file
         user_stem = user_file.stem
@@ -273,9 +275,11 @@ class Report:
             prism_js = f.read()
         
         source_code = ''
-        with open(user_file, 'r+') as f:
-            source_code = f.read()
-        
+        if user_file.is_file():
+            with open(user_file, 'r+') as f:
+                source_code = f.read()
+        else:
+            source_code = 'Not found or from a Jupyter Notebook'
         
         user_dir = Path(user_file).parent
         filename = (user_dir / 'results' / f'{user_stem}-{time}' / 'report.html').resolve()
@@ -283,7 +287,6 @@ class Report:
         env = Environment( loader = FileSystemLoader(templates_dir) )
         template = env.get_template('index.html')
 
-        
         problem_text = "This is an automatically generated report presenting the results found using KIPET."
              
         log_orig = (user_dir / f'log-{user_stem}-{time}.txt').resolve()
@@ -303,10 +306,10 @@ class Report:
             charts_dir = (user_dir / 'results'/  f'{user_stem}-{time}' / 'charts' / f'{reaction_model.name}').resolve()
             
             # Concentration profiles
-            model_dict[name]['chart_C_files'] = [x for x in charts_dir.glob('all-concentration-profiles.html') if x.is_file()]
-            model_dict[name]['chart_S_files'] = [x for x in charts_dir.glob('absorbance-spectra-all.html') if x.is_file()]
-            model_dict[name]['chart_U_files'] = sorted([x for x in charts_dir.glob('*state-profile.html') if x.is_file()])
-            model_dict[name]['chart_Y_files'] = sorted([x for x in charts_dir.glob('*profile.html') if x.is_file() and x not in model_dict[name]['chart_U_files']])
+            model_dict[name]['chart_C_files'] = [x for x in charts_dir.glob(f'all-concentration-profiles{suffix}') if x.is_file()]
+            model_dict[name]['chart_S_files'] = [x for x in charts_dir.glob('absorbance-spectra-all{suffix}') if x.is_file()]
+            model_dict[name]['chart_U_files'] = sorted([x for x in charts_dir.glob('*state-profile{suffix}') if x.is_file()])
+            model_dict[name]['chart_Y_files'] = sorted([x for x in charts_dir.glob('*profile{suffix}') if x.is_file() and x not in model_dict[name]['chart_U_files']])
             
             data_chart_files = None
             spectral_info = None
@@ -315,6 +318,7 @@ class Report:
             if reaction_model.spectra is not None:
                 spectra_file = reaction_model.spectra.file if reaction_model.spectra.file is not None else 'Not provided or custom'
                 data_chart_files = reaction_model._plot_object._plot_input_D_data()
+                data_chart_files = f'{data_chart_files}{suffix}'
                 
                 sd = reaction_model.spectra
                 spectral_info = []
@@ -338,7 +342,7 @@ class Report:
                     
             chart_abs_files = None
             if len(S_data) > 0:
-                chart_abs_files = sorted([x for x in charts_dir.glob('*absorbance-spectra.html') if x.is_file()])
+                chart_abs_files = sorted([x for x in charts_dir.glob('*absorbance-spectra{suffix}') if x.is_file()])
             
             model_dict[name]['chart_abs_files'] = chart_abs_files
             model_dict[name]['comp_data'] = self.component_context(reaction_model)
@@ -449,8 +453,8 @@ class Report:
                 res_chart_files = reaction_model._plot_object._plot_D_residuals()
                 par_chart_files = reaction_model._plot_object._plot_D_parity()
                 
-            model_dict[name]['res_chart'] = res_chart_files
-            model_dict[name]['par_chart'] = par_chart_files
+            model_dict[name]['res_chart'] = f'{res_chart_files}{suffix}'
+            model_dict[name]['par_chart'] = f'{par_chart_files}{suffix}'
             
             feeds = None
             dosing_dict = reaction_model._dosing_points
