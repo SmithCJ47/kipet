@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.abspath('../kipet'))
 
 project = 'KIPET'
 #slug = re.sub(r'\W+', '-', project.lower())
-version = '1.0.3'
+version = '1.0.4'
 #release = 1.1.01
 author = 'KIPET-Team'
 copyright = author
