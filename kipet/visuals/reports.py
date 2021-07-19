@@ -13,6 +13,20 @@ from jinja2 import Environment, FileSystemLoader
 import pandas as pd
 from pytexit import py2tex
 
+def generate_template_file(templates_dir):
+    """
+    This method generates the template file if it does not already exist
+    """
+    template = templates_dir.joinpath('index.html')
+
+    from kipet.visuals.template import template_string
+    if not template.is_file():
+        template_file = open(template, 'w+')
+        template_file.write(template_string)
+        print(template_string)
+        template_file.close()
+
+    return None
 
 class Report:
     
@@ -285,6 +299,9 @@ class Report:
         filename = (user_dir / 'results' / f'{user_stem}-{time}' / 'report.html').resolve()
         
         env = Environment( loader = FileSystemLoader(templates_dir) )
+
+        generate_template_file(templates_dir)
+
         template = env.get_template('index.html')
 
         problem_text = "This is an automatically generated report presenting the results found using KIPET."
