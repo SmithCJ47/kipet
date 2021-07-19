@@ -49,6 +49,9 @@ class EstimabilityAnalyzer(ParameterEstimator):
         tee = kwds.pop('tee', False)
         species_list = kwds.pop('subset_components', None)
 
+        #print(f'{sigma_sq = }')
+        #print(f'{species_list = }')
+
         list_components = []
         if species_list is None:
             list_components = [k for k in self._mixture_components]
@@ -116,6 +119,8 @@ class EstimabilityAnalyzer(ParameterEstimator):
                 #print(m.P[i].value)
                 m.dummyV[i] = m.P[i].value
         
+        #print(f'{paramcount = }')
+        #print(f'{varcount = }')
         #set dummy constraints   
         def dummy_constraints(m,p):
             if p in varlist:
@@ -124,7 +129,6 @@ class EstimabilityAnalyzer(ParameterEstimator):
                 return 0 == m.dummyP[p] - m.P[p] 
            
         m.dummyC = Constraint(m.parameter_names, rule=dummy_constraints)     
-        
         
         if hasattr(m, 'dual'):
             print('The model has duals already...')
@@ -138,48 +142,69 @@ class EstimabilityAnalyzer(ParameterEstimator):
         #: K_AUG SUFFIXES  
         m.dcdp = Suffix(direction=Suffix.EXPORT)  #: the dummy constraints
         m.var_order = Suffix(direction=Suffix.EXPORT)  #: Important variables (primal)
-        m.rh_name = Suffix(direction=Suffix.IMPORT)
+        #m.rh_name = Suffix(direction=Suffix.IMPORT)
         
         # set which are the variables and which are the parameters for k_aug       
-        count_vars = 1
-        #print("count_vars:",count_vars)
-        if not self._spectra_given:
-            pass
-        else:
-            for t in self.model.times_spectra:
-                for c in self._sublist_components:
-                    m.C[t, c].set_suffix_value(m.var_order,count_vars)
-                    count_vars += 1
-        
-        if not self._spectra_given:
-            pass
-        else:
-            for l in self.model.meas_lambdas:
-                for c in self._sublist_components:
-                    m.S[l, c].set_suffix_value(m.var_order,count_vars)
-                    count_vars += 1
-                        
-        for index, value in self.model.Z.items():
-            m.Z[index].set_suffix_value(m.var_order, count_vars)
-            count_vars += 1
-                    
-        if self._concentration_given:
-            for t in self.model.times_concentration:
-                for c in self._sublist_components:
-                    m.Z[t, c].set_suffix_value(m.var_order,count_vars)
-                    count_vars += 1
+        count_vars = 0
 
+        # if hasattr(self.model, 'C'):
+        #     var = 'C'
+        #     for index in getattr(self.model, var).index_set():
+        #         print(index)
+        #         if index[1] in component_set:
+        #             print(index)
+        #             self.model.C[index].set_suffix_value(self.model.var_order, count_vars)
+        #             count_vars += 1
+
+        # if hasattr(self.model, 'S'):
+        #     var = 'S'
+        #     for index in getattr(self.model, var).index_set():
+        #         if index[1] in component_set:
+        #             self.model.S[index].set_suffix_value(self.model.var_order, count_vars)
+        #             count_vars += 1
+
+        # if not self._spectra_given:
+        #     pass
+        # else:
+        #     for t in self.model.times_spectra:
+        #         for c in self._sublist_components:
+        #             m.C[t, c].set_suffix_value(m.var_order,count_vars)
+        #             count_vars += 1
+        
+        # if not self._spectra_given:
+        #     pass
+        # else:
+        #     for l in self.model.meas_lambdas:
+        #         for c in self._sublist_components:
+        #             m.S[l, c].set_suffix_value(m.var_order,count_vars)
+        #             count_vars += 1
+                        
+        for index in getattr(self.model, 'Z').index_set():
+            count_vars += 1
+            m.Z[index].set_suffix_value(m.var_order, count_vars)
+            
+        # print("count_vars:", count_vars)
+        #if self._concentration_given:
+        # for t in self.model.times_concentration:
+        #     for c in component_set:
+        #         count_vars += 1
+        #         m.Z[t, c].set_suffix_value(m.var_order,count_vars)
+                
+
+        #print("count_vars:", count_vars)
         if self._huplc_given:
             raise RuntimeError('Estimability Analysis for additional huplc data is not included as a feature yet!')
                     
-        count_dcdp = 1
-
+        count_dcdp = 0
         idx_to_param = dict()
         for p in m.parameter_names:            
-            m.dummyC[p].set_suffix_value(m.dcdp,count_dcdp)
-            idx_to_param[count_dcdp]=p
             count_dcdp+=1
+            m.dummyC[p].set_suffix_value(m.dcdp, count_dcdp)
+            idx_to_param[count_dcdp]=p
+            
           
+        #print(f'{idx_to_param = }')
+        #print(count_dcdp)
         #: Clear this file
         with open('ipopt.opt', 'w') as f:
             f.close()
@@ -201,10 +226,12 @@ class EstimabilityAnalyzer(ParameterEstimator):
         k_aug.solve(m, tee=True)
         print("Done solving sensitivities")
 
-        dsdp = np.loadtxt('dxdp_.dat')
+        dsdp_file = 'kaug_debug/dxdp_.dat'
+        dsdp = np.loadtxt(dsdp_file)
         
-        if os.path.exists('dxdp_.dat'):
-            os.remove('dxdp_.dat')
+        import os
+        if os.path.exists(dsdp_file):
+            os.remove(dsdp_file)
         # print(idx_to_param)
         
         return dsdp, idx_to_param
@@ -280,8 +307,9 @@ class EstimabilityAnalyzer(ParameterEstimator):
         self.cloned_before_k_aug = self.model.clone()
         dsdp, idx_to_param = self.get_sensitivities_for_params(tee=True, sigmasq=sigmas)
         nvars = np.size(dsdp,0)
+        
         nparams = 0
-        for v in self.model.P.items():
+        for k, v in self.model.P.items():
             if v.is_fixed():
                 print(v, end='\t')
                 print("is fixed")
@@ -653,10 +681,10 @@ class EstimabilityAnalyzer(ParameterEstimator):
         # Now we move the the final steps of the algorithm where we compute critical ratio
         # and the corrected critical ratio
         # first we need the total number of responses
-        N = 0
-        for c in self._sublist_components:
-            for t in self.model.allmeas_times:
-                N += 1 
+        N = len(self.model.Cm)
+        # for c in self._sublist_components:
+        #     for t in self.model.allmeas_times:
+        #         N += 1 
                 
         crit_rat = dict()
         cor_crit_rat = dict()
@@ -694,17 +722,20 @@ class EstimabilityAnalyzer(ParameterEstimator):
         self.residuals = dict()
         
         E = 0
-        for c in self._sublist_components:
-            for t in self.model.allmeas_times:
-                a = model.Cm[c][t]
-                b = model.Z[c][t]
-                r = ((a - b) ** 2)
-                self.residuals[t, c] = r
+        # for c in self._sublist_components:
+        #     for t in self.model.allmeas_times:
+
+        for index in getattr(self.model, 'Cm').index_set():
+            a = model.Cm.loc[index]
+            b = model.Z.loc[index]
+            r = ((a - b) ** 2)
+            self.residuals[index] = r
+            E += r/ meas_scaling**2
                    
         
-        for c in self._sublist_components:
-            for t in self.model.allmeas_times:
-                E += self.residuals[t, c] / (meas_scaling ** 2)
+        # for c in self._sublist_components:
+        #     for t in self.model.allmeas_times:
+        #         E += self.residuals[t, c] / (meas_scaling ** 2)
 
         # print(E)
         # print(self.residuals)
