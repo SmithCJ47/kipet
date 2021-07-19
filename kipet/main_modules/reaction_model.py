@@ -607,7 +607,7 @@ class ReactionModel(WavelengthSelectionMixins):
         
     def algebraic(self, name, **kwargs):
        
-        """Create a algebraic variable for fixed states
+        """Create a generic algebraic variable
         
         :param dict kwargs: The dictionary of keyword arguments for algebraic variables representing
           fixed states (note: takes only those with two indicies)
@@ -928,7 +928,8 @@ class ReactionModel(WavelengthSelectionMixins):
         """Adds an expression to the model (DAE, custtom objectives, fixed trajectories)
         
         All of the auxilliary functions such as DAEs, custom objectives, fixed trajectories, additions, etc. are
-        added to the ReactionModel instance here.
+        added to the ReactionModel instance here. This method also lets you declare algebraics before adding an
+        accompanying expression.
         
         :param str name: The name used to identify the reaction
         :param expr: The expression representing the reaction
@@ -943,11 +944,14 @@ class ReactionModel(WavelengthSelectionMixins):
         :rtype: Pyomo Expression
         """        
         # Adds algebraics anyways, for comparison purposes
-        self._add_model_component('algebraic', 
-                                  2, 
-                                  self.__var.algebraic, 
-                                  name, 
-                                  **kwargs)
+
+        if name not in self.algebraics.names:
+
+            self._add_model_component('algebraic', 
+                                    2, 
+                                    self.__var.algebraic, 
+                                    name, 
+                                    **kwargs)
         
         if not kwargs.get('active', True):
             expr = 0
@@ -1321,7 +1325,7 @@ class ReactionModel(WavelengthSelectionMixins):
         sim_set_up_options = copy.copy(self.settings.simulator)
         
         # Initialization is now defaulted to FESimulator (settings file)
-        dis_method = sim_set_up_options.pop('method', 'fe')
+        dis_method = sim_set_up_options.get('method', 'fe')
         
         # Override the chosen method to fe if dosing or steps are included
         if self._has_step_or_dosing:
@@ -1376,7 +1380,7 @@ class ReactionModel(WavelengthSelectionMixins):
             self._call_fe_factory()
         
         simulator_options = self.settings.simulator
-        simulator_options.pop('method', None)
+        simulator_options.get('method', None)
         
         if parameters is not None:
             for key, value in parameters.items():
@@ -1854,6 +1858,7 @@ class ReactionModel(WavelengthSelectionMixins):
         print('# ParameterEstimator: Creating instance\n')
         self._create_estimator(estimator='p_estimator')
         
+        setattr(self.p_estimator, 'ncp', self.settings.collocation.ncp)
         variances = self.components.variances
         self.variances = variances
         
@@ -2705,14 +2710,14 @@ class ReactionModel(WavelengthSelectionMixins):
         return None
     
     
-    def report(self, mee=False, all_names=None):
+    def report(self, jupyter=False, mee=False, all_names=None):
         """Generates a report of the ReactionModel results
         
         :return: None
         
         """
         from kipet.visuals.reports import Report
-        self.plot()
+        self.plot(jupyter=jupyter)
         self.report_object = Report([self])
         self.report_object.generate_report()
         

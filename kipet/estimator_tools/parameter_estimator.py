@@ -559,7 +559,7 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
             self.inv_hessian, self.inv_hessian_reduced = covariance_sipopt(self.model, optimizer, self.comps['unknown_absorbance'], self.param_names_full)
             
         elif self.covariance_method == 'k_aug':
-            self.inv_hessian, self.inv_hessian_reduced = covariance_k_aug(self.model, None, self.comps['unknown_absorbance'], self.param_names_full)
+            self.inv_hessian, self.inv_hessian_reduced = covariance_k_aug(self.model, None, self.comps['unknown_absorbance'], self.param_names_full, self.ncp)
             
         if hasattr(self.model, 'C'):
             from kipet.estimator_tools.reduced_hessian_methods import compute_covariance

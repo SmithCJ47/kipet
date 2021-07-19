@@ -5,6 +5,7 @@ This module is to hold generic methods for parameter estimator and mee for deter
 reduced hessian. This will eventually replace the reduced hessian module.
 """
 # Third party imports
+from operator import index
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -63,7 +64,7 @@ def define_free_parameters(models_dict, global_params=None, kind='full'):
     return param_names
 
 
-def define_reduce_hess_order(models_dict, component_set, param_names_full):
+def define_reduce_hess_order(models_dict, component_set, param_names_full, k_aug):
     """
     This sets up the suffixes of the reduced hessian for use with SIpopt
     
@@ -86,6 +87,8 @@ def define_reduce_hess_order(models_dict, component_set, param_names_full):
                 if index[1] in component_set:
                     v = getattr(model, var)[index]
                     index_to_variable[count_vars] = v
+                    if k_aug:
+                        v.set_suffix_value(model.dof_v, count_vars)
                     count_vars += 1
                 
     for exp, model in models_dict.items():
@@ -95,6 +98,8 @@ def define_reduce_hess_order(models_dict, component_set, param_names_full):
                 if index[1] in component_set:
                     v = getattr(model, var)[index]
                     index_to_variable[count_vars] = v
+                    if k_aug:
+                        v.set_suffix_value(model.dof_v, count_vars)
                     count_vars += 1
        # exp_count = False
         
@@ -103,8 +108,11 @@ def define_reduce_hess_order(models_dict, component_set, param_names_full):
         for parameter_kind in __var.optimization_variables:
             if hasattr(model, parameter_kind):
                 for v in getattr(model, parameter_kind).values():
-                    if v.to_string() in param_names_full:
+                    print(v.to_string, v.fixed)
+                    if v.to_string() in param_names_full and not v.fixed:
                         index_to_variable[count_vars] = v
+                        if k_aug:
+                            v.set_suffix_value(model.dof_v, count_vars)
                         count_vars += 1
 
     return index_to_variable
@@ -251,7 +259,7 @@ def make_Vd_matrix(models_dict, all_variances):
     return coo_matrix(Vd)
 
 
-def index_variable_mapping(model_dict, components, parameter_names, mee_obj=None):
+def index_variable_mapping(model_dict, components, parameter_names, mee_obj=None, k_aug=False):
     """This adds the needed suffixes for the reduced hessian to the model object
     used in covariance predictions
     
@@ -270,7 +278,7 @@ def index_variable_mapping(model_dict, components, parameter_names, mee_obj=None
         model_obj = model_dict
         
     model_obj.red_hessian = Suffix(direction=Suffix.IMPORT_EXPORT)
-    index_to_variables = define_reduce_hess_order(model_dict, components, parameter_names)
+    index_to_variables = define_reduce_hess_order(model_dict, components, parameter_names, k_aug)
     
     for k, v in index_to_variables.items():
         model_obj.red_hessian[v] = k
@@ -316,7 +324,7 @@ def covariance_sipopt(model_obj, solver_factory, components, parameters, mee_obj
     return covariance_matrix, covariance_matrix_reduced
 
 
-def covariance_k_aug(model_obj, solver_factory, components, parameters, mee_obj=None):
+def covariance_k_aug(model_obj, solver_factory, components, parameters, ncp=1, mee_obj=None):
     """Generalize the covariance optimization with IPOPT Sens
 
     :param ConcreteModel model: The Pyomo model used in parameter fitting
@@ -330,7 +338,8 @@ def covariance_k_aug(model_obj, solver_factory, components, parameters, mee_obj=
     """
     _tmpfile = "k_aug_hess"
     optimization_model = model_obj if mee_obj is None else mee_obj
-    add_warm_start_suffixes(optimization_model, use_k_aug=True)   
+    add_warm_start_suffixes(optimization_model, use_k_aug=True) 
+    index_to_variable = index_variable_mapping(model_obj, components, parameters, mee_obj, k_aug=True)
     
     ip = SolverFactory('ipopt')
     solver_results = ip.solve(
@@ -343,16 +352,57 @@ def covariance_k_aug(model_obj, solver_factory, components, parameters, mee_obj=
         )
 
     update_warm_start(optimization_model)
-    
     k_aug = SolverFactory('k_aug')
-    k_aug.options["print_kkt"] = ""
+
+    use_kkt = False
+    if ncp > 1:
+        use_kkt = True
+
+    if use_kkt:
+        k_aug.options["print_kkt"] = ""
+    else:
+        k_aug.options["compute_inv"] = ""
+
     k_aug.solve(optimization_model, tee=True)
+
     stub = ip._problem_files[0][:-3]
-    
     var_index_names, con_index_names = var_con_data(stub)
-    size = (len(con_index_names), len(var_index_names))
     col_ind, col_ind_param_hr = free_variables(model_obj, components, parameters, var_index_names)
-    covariance_matrix = calculate_inverse_hr(size, col_ind)
+    
+    if not use_kkt:
+        kaug_files = Path('kaug_debug')
+        covariance_file = kaug_files.joinpath('result_red_hess.txt')
+        unordered_hessian = np.loadtxt(covariance_file)
+        
+        var_loc = model_obj.rh_name
+        for v in index_to_variable.values():
+            try:
+                var_loc[v]
+            except:
+                var_loc[v] = 0
+
+        n_vars = len(index_to_variable)
+        hessian = np.zeros((n_vars, n_vars))
+        
+        for i, vi in enumerate(index_to_variable.values()):
+            for j, vj in enumerate(index_to_variable.values()):
+                if n_vars == 1:
+                    h = unordered_hessian
+                    hessian[i, j] = h
+                else:
+                    h = unordered_hessian[(var_loc[vi]), (var_loc[vj])]
+                    hessian[i, j] = h
+        print(hessian.size, "hessian size")
+
+        print(hessian)
+        covariance_matrix = hessian
+        
+        
+    else:
+        size = (len(con_index_names), len(var_index_names))
+        covariance_matrix = calculate_inverse_hr(size, col_ind)
+        print(covariance_matrix)
+
     covariance_matrix_reduced = covariance_matrix[col_ind_param_hr, :]
 
     return covariance_matrix, covariance_matrix_reduced
@@ -535,6 +585,7 @@ def add_warm_start_suffixes(model, use_k_aug=False):
         model.rh_name = Suffix(direction=Suffix.IMPORT)
         
     return None
+
         
 def update_warm_start(model):
     """Updates the suffixed variables for a warmstart
