@@ -13,6 +13,39 @@ from jinja2 import Environment, FileSystemLoader
 import pandas as pd
 from pytexit import py2tex
 
+def generate_template_file(templates_dir):
+    """
+    This method generates the template file if it does not already exist
+    """
+    template = templates_dir.joinpath('index.html')
+    if not template.is_file():
+        from kipet.visuals.template import template_string
+        template_file = open(template, 'w+')
+        template_file.write(template_string)
+        template_file.close()
+
+    template_js = templates_dir.joinpath('prism.js')
+    if not template_js.is_file():
+        from kipet.visuals.template_js import template_js_string
+        template_file = open(template_js, 'w+')
+        template_file.write(template_js_string)
+        template_file.close()
+
+    template_css = templates_dir.joinpath('report.css')
+    if not template_css.is_file():
+        from kipet.visuals.template_css import template_css_report
+        template_file = open(template_css, 'w+')
+        template_file.write(template_css_report)
+        template_file.close()
+
+    template_css = templates_dir.joinpath('prism.css')
+    if not template_css.is_file():
+        from kipet.visuals.template_css import template_css_prism
+        template_file = open(template_css, 'w+')
+        template_file.write(template_css_prism)
+        template_file.close()
+
+    return None
 
 class Report:
     
@@ -258,6 +291,8 @@ class Report:
         time = self.reactions[0].timestamp
         current_dir = Path(__file__).parent
         templates_dir = (current_dir / 'templates').resolve()
+        generate_template_file(templates_dir)
+
         style_file = (templates_dir / 'report.css').resolve()
         prism_style_file = (templates_dir / 'prism.css').resolve()
         prism_js_file = (templates_dir / 'prism.js').resolve()
@@ -285,6 +320,7 @@ class Report:
         filename = (user_dir / 'results' / f'{user_stem}-{time}' / 'report.html').resolve()
         
         env = Environment( loader = FileSystemLoader(templates_dir) )
+
         template = env.get_template('index.html')
 
         problem_text = "This is an automatically generated report presenting the results found using KIPET."
