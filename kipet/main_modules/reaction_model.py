@@ -1282,10 +1282,7 @@ class ReactionModel(WavelengthSelectionMixins):
         else:
             from kipet.input_output.kipet_io import Tee
 
-            results_dir = pathlib.Path.cwd().joinpath(self.file.parent, 'results', f'{self.file.stem}-{self.timestamp}')
-            if not results_dir.is_dir():
-                results_dir.mkdir(parents=True)
-
+            results_dir = self._get_results_dir()
             filename = results_dir.joinpath('log.txt')  
 
             with Tee(filename):   
@@ -1756,10 +1753,7 @@ class ReactionModel(WavelengthSelectionMixins):
         
             from kipet.input_output.kipet_io import Tee
 
-            results_dir = pathlib.Path.cwd().joinpath(self.file.parent, 'results', f'{self.file.stem}-{self.timestamp}')
-            if not results_dir.is_dir():
-                results_dir.mkdir(parents=True)
-
+            results_dir = self._get_results_dir()
             filename = results_dir.joinpath('log.txt') 
 
             with Tee(filename):     
@@ -2134,10 +2128,7 @@ class ReactionModel(WavelengthSelectionMixins):
         """
         from kipet.input_output.kipet_io import Tee
 
-        results_dir = pathlib.Path.cwd().joinpath(self.file.parent, 'results', f'{self.file.stem}-{self.timestamp}')
-        if not results_dir.is_dir():
-            results_dir.mkdir(parents=True)
-
+        results_dir = self._get_results_dir()
         filename = results_dir.joinpath('log.txt') 
 
         with Tee(filename):
@@ -2879,3 +2870,11 @@ class ReactionModel(WavelengthSelectionMixins):
     
         return None
     
+    def _get_results_dir(self):
+        """Sets up the directory for the results"""
+
+        results_dir = pathlib.Path.cwd().joinpath(self.file.parent, 'results', f'{self.file.stem.lstrip("<").rstrip(">")}-{self.timestamp}')
+        if not results_dir.is_dir():
+            results_dir.mkdir(parents=True)
+
+        return results_dir
