@@ -181,7 +181,7 @@ class PlotObject:
         filename = f'{plot_name}'
         # Change the folder directory
             
-        stem = self.reaction_model.file.stem
+        stem = self.reaction_model.file.stem.lstrip('<').rstrip('>')
         
         print(self.jupyter)
 
