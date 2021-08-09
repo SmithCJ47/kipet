@@ -1,4 +1,5 @@
 # Standard library imports
+from operator import mod
 from os import getcwd
 
 # Third party imports
@@ -7,6 +8,7 @@ from pyomo.environ import Constraint, ConstraintList, Param, TransformationFacto
 from pyomo.opt import ProblemFormat, SolverFactory, TerminationCondition
 
 # KIPET library imports
+from kipet.calculation_tools.interpolation import interpolate_trajectory
 from kipet.model_tools.visitor_classes import ReplacementVisitor
 from kipet.general_settings.variable_names import VariableNames
 from kipet.model_tools.pyomo_model_tools import (change_continuous_set,
@@ -41,10 +43,8 @@ class FEInitialize(object):
                  init_con=None,
                  param_name=None,
                  param_values=None,
-                 inputs=None,
                  inputs_sub=None,
-                 jump_times=None,
-                 jump_states=None,
+                 fixed_states=None,
                  ):
         """
         The `the paran name` might be a list of strings or a single string
@@ -96,6 +96,8 @@ class FEInitialize(object):
         self.model_orig = model_orig
         self.model_ref = src_mod.clone()
 
+        self.fixed_states = fixed_states
+
         self.volume_name = self.__var.volume_name
         if self.volume_name is None:
             raise ValueError('A volume name must exist')
@@ -112,12 +114,20 @@ class FEInitialize(object):
         model_original_time_set = getattr(self.model_orig, self.time_set)
         self.ncp = model_original_time_set.get_discretization_info()['ncp']
         fe_l = model_original_time_set.get_finite_elements()
-
+        self.model_times = model_original_time_set.data()
         self.fe_list = [fe_l[i + 1] - fe_l[i] for i in range(0, len(fe_l) - 1)]
         self.nfe = len(self.fe_list)
 
+        # print("Time sets")
+        # print(f'{model_original_time_set = }')
+        # print(f'{self.time_set = }')
+        # print(f'{fe_l = }')
+        # self.fe_l = fe_l
+        # print(f'{self.fe_list = }')
+
         #: Re-construct the model with [0,1] time domain
         times = getattr(self.model_ref, self.time_set)
+        self.times = times
         change_continuous_set(times, [0, 1])
 
         for var in self.model_ref.component_objects(Var):
@@ -145,9 +155,11 @@ class FEInitialize(object):
                     realname = getattr(self.model_ref, namel[0])
                     self.dvar_names.append(namel[0])
                     self.dvs_names.append(realname.get_state_var().name)
+        
         self.model_ref.h_i = Param(times, mutable=True, default=1.0)  #: Length of finite element
 
         #: Modify the collocation equations to introduce h_i (the length of finite element)
+        
         for i in self.dvar_names:
             con = getattr(self.model_ref, i + '_disc_eq')
             dv = getattr(self.model_ref, i)
@@ -347,7 +359,8 @@ class FEInitialize(object):
             for param, obj in getattr(self.model_ref, self.__var.model_constant).items():
                 obj.fix()
 
-        # if hasattr(self.model_ref, self.__var.algebraic):
+        #self.load_fixed_states(0)
+
         #     model_var_obj = getattr(self.model_ref, self.__var.algebraic)
         #     for k in ['f']:
         #         if isinstance(k, str) or isinstance(k, int) or isinstance(k, tuple):
@@ -358,20 +371,53 @@ class FEInitialize(object):
         #             print(model_var_obj.display())
         #             model_var_obj[(t,) + k].fix()
 
+        # This needs to be somewhere else, but it is needed here as well - how to fix?
+        # print("Printing out all of the values for algebraics")
         # for param, obj in getattr(self.model_ref, self.__var.algebraic).items():
-        #     print(param)
+        #     #print(param)
         #     print(obj)
-        #     if param[1] == 'f' or param[1] == 'Csat':
-        #         for t in times:
-        #             print(t, param[1])
-        #             obj[(t,) + (param[1],)].fix()
-
+        #     # if param[1] == 'f' or param[1] == 'Csat':
+        #     #     for t in times:
+        #     #         print(t, param[1])
+        #     #         obj.fix()
+        #     #         # obj[(t,) + (param[1],)].fix()
+            
+        # import pandas as pd
+        # traj = pd.DataFrame([5, 10], index=[0, 1], columns=['f'])
+        # values = interpolate_trajectory(times, traj)
+        # print(values)
         # : Check n vars and m equations
         (n, m) = reconcile_nvars_mequations(self.model_ref)
         if n != m:
             raise Exception("Inconsistent problem; n={}, m={}".format(n, m))
         self.jump = False
         self.con_num = 0
+
+    def load_fixed_states(self, n_fe):
+        """
+        This method fixes the correct values for fixed states in the reference model
+        """
+        model_var_obj_ref = getattr(self.model_ref, self.__var.algebraic)
+        model_var_obj_org = getattr(self.model_orig, self.__var.algebraic)
+
+        if hasattr(self.model_ref, self.__var.algebraic):
+            #for index, obj in getattr(self.model_ref, self.__var.algebraic).items():
+            for alg in self.fixed_states:
+                for i, t in enumerate(self.times):
+                    # print(alg)
+                    # #for i, t in enumerate(self.times):
+                    # print(f"START ITER {i}")
+                    # print(i, t)
+                    # print("the value in the ref")
+                    # print(model_var_obj_ref[(t,) + (alg,)].value)
+                    # print("the value in the orig at the fe start")
+                    print(model_var_obj_org[(self.model_times[n_fe*self.ncp + i],) + (alg,)].value)
+                    model_var_obj_ref[(t,) + (alg,)].set_value(model_var_obj_org[(self.model_times[n_fe*self.ncp + i],) + (alg,)].value)
+                    # print("END ITER")
+                    #model_var_obj_ref.fix()
+                    model_var_obj_ref[(t,) + (alg,)].fix()
+
+                    print(model_var_obj_ref[(t, alg)].value)
 
     def load_initial_conditions(self, init_cond=None):
         if not isinstance(init_cond, dict):
@@ -416,6 +462,10 @@ class FEInitialize(object):
         if self.inputs or self.inputs_sub:
             self.load_input(fe)
 
+        # print(f"Currently {fe = }")
+        # self.load_fixed_states(fe)
+        # self.model_ref.Y.display()
+
         self.ip.options["print_level"] = 1  #: change this on demand
         # self.ip.options["start_with_resto"] = 'no'
         self.ip.options['bound_push'] = 1e-02
@@ -438,6 +488,7 @@ class FEInitialize(object):
                 if sol.solver.termination_condition != TerminationCondition.optimal:
                     raise Exception("The current iteration was unsuccessful. Iteration :{}".format(fe))
 
+        #self.load_fixed_states(fe)
         self.patch(fe)
         self.cycle_ics(fe)
 
@@ -682,8 +733,8 @@ class FEInitialize(object):
 
         """
         hi = getattr(self.model_ref, "h_i")
-        zeit = getattr(self.model_ref, self.time_set)
-        for t in zeit:
+        time = getattr(self.model_ref, self.time_set)
+        for t in time:
             hi[t].value = self.fe_list[fe]
 
     def run(self, resto_strategy="bound_relax"):
