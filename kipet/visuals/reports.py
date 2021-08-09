@@ -287,7 +287,7 @@ class Report:
         suffix = '.html' # '.svg'
     
         user_file = self.reactions[0].file
-        user_stem = user_file.stem
+        user_stem = user_file.stem.lstrip('<').rstrip('>')
         time = self.reactions[0].timestamp
         current_dir = Path(__file__).parent
         templates_dir = (current_dir / 'templates').resolve()
@@ -343,10 +343,12 @@ class Report:
             
             # Concentration profiles
             model_dict[name]['chart_C_files'] = [x for x in charts_dir.glob(f'all-concentration-profiles{suffix}') if x.is_file()]
-            model_dict[name]['chart_S_files'] = [x for x in charts_dir.glob('absorbance-spectra-all{suffix}') if x.is_file()]
-            model_dict[name]['chart_U_files'] = sorted([x for x in charts_dir.glob('*state-profile{suffix}') if x.is_file()])
-            model_dict[name]['chart_Y_files'] = sorted([x for x in charts_dir.glob('*profile{suffix}') if x.is_file() and x not in model_dict[name]['chart_U_files']])
+            model_dict[name]['chart_S_files'] = [x for x in charts_dir.glob(f'absorbance-spectra-all{suffix}') if x.is_file()]
+            model_dict[name]['chart_U_files'] = sorted([x for x in charts_dir.glob(f'*state-profile{suffix}') if x.is_file()])
+            model_dict[name]['chart_Y_files'] = sorted([x for x in charts_dir.glob(f'*profile{suffix}') if x.is_file() and x not in model_dict[name]['chart_U_files']])
             
+            print(model_dict[name]['chart_C_files'])
+
             data_chart_files = None
             spectral_info = None
             spectra_file = None

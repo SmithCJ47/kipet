@@ -326,7 +326,7 @@ class ReactionSet:
                 self._create_multiple_experiments_estimator()
                 from kipet.input_output.kipet_io import Tee
 
-                results_dir = pathlib.Path.cwd().joinpath(self.file.parent, 'results', f'{self.file.stem}-{self.timestamp}')
+                results_dir = pathlib.Path.cwd().joinpath(self.file.parent, 'results', f'{self.file.stem.lstrip("<").rstrip(">")}-{self.timestamp}')
                 if not results_dir.is_dir():
                     results_dir.mkdir(parents=True)
 

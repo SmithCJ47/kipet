@@ -16,7 +16,7 @@ class FESimulator(PyomoSimulator):
     
     """
 
-    def __init__(self, model):
+    def __init__(self, model, fixed_states=None):
         """It takes in a standard Kipet/Pyomo model, rewrites it and calls 
         fe_factory. More information on fe_factory is included in that class
         description.
@@ -31,6 +31,7 @@ class FESimulator(PyomoSimulator):
         self.param_dict = {}
         self.param_name = self.__var.model_parameter
         self.c_sim = self.model.clone()
+        self.fixed_states = fixed_states
 
         # Check all parameters are fixed before simulating
         if hasattr(self.model, self.__var.model_parameter):
@@ -84,12 +85,13 @@ class FESimulator(PyomoSimulator):
         self.inputs_sub = inputs_sub
 
         init = FEInitialize(self.model,
-                             self.c_sim,
-                             init_con="init_conditions_c",
-                             param_name=self.param_name,
-                             param_values=self.param_dict,
-                             inputs_sub=self.inputs_sub,
-                             )
+                            self.c_sim,
+                            init_con="init_conditions_c",
+                            param_name=self.param_name,
+                            param_values=self.param_dict,
+                            inputs_sub=self.inputs_sub,
+                            fixed_states=self.fixed_states
+                            )
 
         init.load_initial_conditions(init_cond=self.ics_)
 
