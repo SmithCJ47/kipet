@@ -219,6 +219,7 @@ class ReactionModel(WavelengthSelectionMixins):
         self.__var = VariableNames()
         self._sim_output = ''
         self._output = ''
+        self._fixed_states = []
         
         if model is not None:
             self._copy_from_model(model)
@@ -598,6 +599,8 @@ class ReactionModel(WavelengthSelectionMixins):
         if 'data' not in kwargs:
             raise ValueError('A fixed state requires data in order to fix a trajectory')
         else:
+
+            self._fixed_states.append(name)
             return self._add_model_component('algebraic', 
                                              2, 
                                              self.__var.algebraic, 
@@ -1325,8 +1328,16 @@ class ReactionModel(WavelengthSelectionMixins):
         dis_method = sim_set_up_options.get('method', 'fe')
         
         # Override the chosen method to fe if dosing or steps are included
-        if self._has_step_or_dosing:
+        if self._has_step_or_dosing and self._fixed_states is None:
             dis_method = 'fe'
+            print('Changing simulation method to finite element (fe)')
+
+        elif self._fixed_states is not None and not self._has_step_or_dosing:
+            dis_method = 'dae.collocation'
+            print('Changing simulation method to DAE collocation (dae.collocation)')
+        
+        else:
+            raise ValueError('Simulation with fixed states and dosing/steps is not currently supported')
         
         # Choose the proper simulator object
         simulation_class = PyomoSimulator
@@ -1345,7 +1356,7 @@ class ReactionModel(WavelengthSelectionMixins):
         
         # Initialize the simulator instance
         if dis_method == 'fe':
-            simulator = simulation_class(self._s_model)
+            simulator = simulation_class(self._s_model, fixed_states=self._fixed_states)
 
         else:
             simulator = simulation_class(self._s_model)
@@ -1362,6 +1373,8 @@ class ReactionModel(WavelengthSelectionMixins):
                 getattr(simulator.model, self.__var.dosing_variable)[time_step, self.__var.dosing_component].set_value(time_step)
                 getattr(simulator.model, self.__var.dosing_variable)[time_step, self.__var.dosing_component].fix()
         
+        print(self._s_model.alltime.data())
+
         # Add this simulator to the class attributes
         self.simulator = simulator
         print('# Simulator: Finished creating simulator')
