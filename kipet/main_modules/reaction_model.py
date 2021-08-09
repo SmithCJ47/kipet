@@ -1328,13 +1328,15 @@ class ReactionModel(WavelengthSelectionMixins):
         dis_method = sim_set_up_options.get('method', 'fe')
         
         # Override the chosen method to fe if dosing or steps are included
-        if self._has_step_or_dosing and self._fixed_states is None:
-            dis_method = 'fe'
-            print('Changing simulation method to finite element (fe)')
+        if self._has_step_or_dosing and self._fixed_states is None or len(self._fixed_states) == 0:
+            if dis_method != 'fe':
+                print('Changing simulation method to finite element (fe)')
+                dis_method = 'fe'
 
         elif self._fixed_states is not None and not self._has_step_or_dosing:
-            dis_method = 'dae.collocation'
-            print('Changing simulation method to DAE collocation (dae.collocation)')
+            if dis_method != 'dae.collocation':
+                dis_method = 'dae.collocation'
+                print('Changing simulation method to DAE collocation (dae.collocation)')
         
         else:
             raise ValueError('Simulation with fixed states and dosing/steps is not currently supported')
@@ -1372,8 +1374,6 @@ class ReactionModel(WavelengthSelectionMixins):
             for time_step in simulator.model.alltime.data():
                 getattr(simulator.model, self.__var.dosing_variable)[time_step, self.__var.dosing_component].set_value(time_step)
                 getattr(simulator.model, self.__var.dosing_variable)[time_step, self.__var.dosing_component].fix()
-        
-        print(self._s_model.alltime.data())
 
         # Add this simulator to the class attributes
         self.simulator = simulator
