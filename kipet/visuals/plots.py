@@ -182,8 +182,6 @@ class PlotObject:
         # Change the folder directory
             
         stem = self.reaction_model.file.stem.lstrip('<').rstrip('>')
-        
-        print(self.jupyter)
 
         if self.jupyter:
             chart_dir = Path.cwd().joinpath('results', f'{stem}-{self.folder_name}' , 'charts', f'{self.name}')

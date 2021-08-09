@@ -346,8 +346,6 @@ class Report:
             model_dict[name]['chart_S_files'] = [x for x in charts_dir.glob(f'absorbance-spectra-all{suffix}') if x.is_file()]
             model_dict[name]['chart_U_files'] = sorted([x for x in charts_dir.glob(f'*state-profile{suffix}') if x.is_file()])
             model_dict[name]['chart_Y_files'] = sorted([x for x in charts_dir.glob(f'*profile{suffix}') if x.is_file() and x not in model_dict[name]['chart_U_files']])
-            
-            print(model_dict[name]['chart_C_files'])
 
             data_chart_files = None
             spectral_info = None
