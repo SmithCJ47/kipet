@@ -300,7 +300,7 @@ class ReactionSet:
 
         return None
     
-    def run_opt(self, method='mee'):
+    def run_opt(self, method='mee', strategy='trust-region'):
         """This method will perform parameter fitting for all ReactionModels in
         the ReactionSet models attribute. If more than one ReactionModel instance
         is present, the MultipleExperimentEstiamtor is used to solve for the
@@ -315,29 +315,32 @@ class ReactionSet:
             The NSD method is not implemented at this time!
         
         :return: None
-        """
         
+        """
         if hasattr(self, "mee"):
             del self.mee
 
+        from kipet.input_output.kipet_io import Tee
+        results_dir = pathlib.Path.cwd().joinpath(self.file.parent, 'results', f'{self.file.stem.lstrip("<").rstrip(">")}-{self.timestamp}')
+        if not results_dir.is_dir():
+            results_dir.mkdir(parents=True)
+        filename = results_dir.joinpath('log.txt') 
+
         if len(self.reaction_models) > 1:
+            print('# ReactionSet: Multiple ReactionModel instances detected')
             if method == "mee":
+                print('# ReactionSet: Starting multiple experiment estimator')
                 self._calculate_parameters()
                 self._create_multiple_experiments_estimator()
-                from kipet.input_output.kipet_io import Tee
-
-                results_dir = pathlib.Path.cwd().joinpath(self.file.parent, 'results', f'{self.file.stem.lstrip("<").rstrip(">")}-{self.timestamp}')
-                if not results_dir.is_dir():
-                    results_dir.mkdir(parents=True)
-
-                filename = results_dir.joinpath('log.txt') 
-
                 with Tee(filename): 
                     self._run_full_model()
-            # elif method == 'nsd':
-            #     self._calculate_parameters()
-                # with Tee(f'log-{self.timestamp}.txt'):  
-            #         self._mee_nsd(strategy='ipopt')
+            
+            elif method == 'nsd':
+                print('# ReactionSet: Starting nested Schur decomposition estimator')
+                self._calculate_parameters()
+                with Tee(filename):  
+                    self._mee_nsd(strategy=strategy)
+            
             else:
                 raise ValueError("Not a valid method for optimization")
                 
@@ -405,6 +408,7 @@ class ReactionSet:
         :rtype: dict
 
         """
+        from kipet.estimator_tools.nested_schur_decomposition import NSD
         kwargs = {'kipet': True,
                   'objective_multiplier': 1
                   }
@@ -424,8 +428,8 @@ class ReactionSet:
         results = self.nsd.run_opt()
 
         self.results = results
-        for key, results_obj in self.results.items():
-            results_obj.file_dir = self.settings.general.charts_directory
+        # for key, results_obj in self.results.items():
+        #     results_obj.file_dir = self.settings.general.charts_directory
 
         return results
     
