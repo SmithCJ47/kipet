@@ -119,6 +119,7 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         yfixtraj = kwds.pop("yfixtraj", None)
 
         jump = kwds.pop("jump", False)
+        solve = kwds.pop("solve", True)
         
         self.confidence = kwds.pop('confidence', None)
         if self.confidence is None:
@@ -178,18 +179,24 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         #     solver_results = opt.solve(self.model, tee=tee)
 
         #if self._spectra_given:
-        self.objective_value = self._solve_model(
+        self._add_objective(
             variances,
             tee=tee,
             covariance=covariance,
             with_d_vars=with_d_vars,
             **kwds)
-
-        if report_time:
-            end = time.time()
-            print("Total execution time in seconds for variance estimation:", end - start)
-
-        return self._get_results()
+        
+        if solve:
+            self.objective_value = self.optimize(self.model, variances)
+    
+            if report_time:
+                end = time.time()
+                print("Total execution time in seconds for variance estimation:", end - start)
+    
+            return self._get_results()
+        
+        else:
+            return None
 
     def _get_results(self):
         """Removed results unit from function
@@ -199,8 +206,14 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
 
         """
         results = ResultsObject()
-        results.objective = self.objective_value
+        
+        if hasattr(self, 'objective_value'):
+            results.objective = self.objective_value
+        else:
+            results.objective = None
+        
         results.parameter_covariance = self.cov
+        
         results.load_from_pyomo_model(self.model)
         results.show_parameters(self.confidence)
 
@@ -213,18 +226,16 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         else:
             setattr(results, self.__var.model_parameter, {name: getattr(self.model, self.__var.model_parameter)[name].value for name in self.model.parameter_names})
 
-        if self.termination_condition!=None and self.termination_condition!=TerminationCondition.optimal:
+        if self.termination_condition != None and self.termination_condition != TerminationCondition.optimal:
             raise Exception("The current iteration was unsuccessful.")
         else:
             if self._estimability == True:
                 return self.hessian, results
             else:
                 return results
-
-        return results
             
-    def _solve_model(self, sigma_sq, **kwds):
-        """Main function to getup the objective and perform the parameter estimation 
+    def _add_objective(self, sigma_sq, **kwds):
+        """Main function to setup the objective and perform the parameter estimation 
 
            This method is not intended to be used by users directly
 
@@ -280,7 +291,6 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
             
             if self.G_contribution == 'time_variant_G':
                 model.qr_end_cons = Constraint(rule = _qr_end_constraint)
-            
             
             if with_d_vars and self.model_variance:
                 model.D_bar = Var(model.times_spectral, model.meas_lambdas)
@@ -346,8 +356,20 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         #     weights = kwds.pop('weights', [1.0, 1.0, 1.0])
         # else:
         #     weights = kwds.pop('weights', [1.0, 1.0])
+        return None
+        
+            
+    def _solve_model(self, sigma_sq):
+        """Main function to perform the parameter estimation 
 
-        obj_val = self.optimize(model, sigma_sq)
+           This method is not intended to be used by users directly
+
+        :param dict sigma_sq: variances
+
+        :return: None
+
+        """
+        obj_val = self.optimize(self.model, sigma_sq)
         
         return obj_val
 
@@ -537,7 +559,6 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
             
         obj_val = model.objective.expr()
        
-        model.del_component('objective')
         if hasattr(model, 'D_bar'):
             model.del_component('D_bar')
         if hasattr(model,' D_bar_constraint'):
