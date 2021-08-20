@@ -1677,13 +1677,14 @@ class ReactionModel(WavelengthSelectionMixins):
         return results
     
     
-    def _run_pe_opt(self):
+    def _run_pe_opt(self, solve):
         """Wrapper for run_opt method in ParameterEstimator"""
         if hasattr(self, '_G_data') and self._G_data is not None:
             pe_settings = {**self.settings.parameter_estimator, **self._G_data}
         else:
             pe_settings = {**self.settings.parameter_estimator} #, **self._G_data}, 
             
+        pe_settings['solve'] = solve
         self._run_opt('p_estimator', **pe_settings)
         
         return None
@@ -1777,7 +1778,113 @@ class ReactionModel(WavelengthSelectionMixins):
             
         return results
         
+
+    def _ve_set_up(self):
+
+        """Initializes the VarianceEstimator object for the ReactionModel"""
+
+        # Check if all component variances are given; if not run VarianceEstimator
+        has_spectral_data = self.spectra is not None
+        has_all_variances = self.components.has_all_variances
+        method = self.settings.variance_estimator.method
+        
+        # First check if VE is needed
+        if not has_all_variances and has_spectral_data:
+        
+            # Create the VE
+            print('# VarianceEsitmator: Creating instance')
+            self._create_estimator(estimator='v_estimator')
+            self.settings.variance_estimator.solver_opts = self.settings.solver
+            # This returns None or the calculated device variance
+            # max_device_variance = self.max_device_variance()
+            
+            # Using known device variance (best-case accuracy) --> sigma_range
+            if method == 'direct_sigmas' and self.settings.variance_estimator.fixed_device_variance is None:
+                print(f'# VarianceEstimator: Solving for range of fixed device variances between best and worst variances ({self.settings.variance_estimator.num_points} steps)')
+                self.settings.variance_estimator.device_range = (self.settings.variance_estimator.best_accuracy, self.max_device_variance())
+                variance_dict = self._run_ve_opt()
+                self.direct_sigma_dict = variance_dict
+                return variance_dict
+                
+            elif self.settings.variance_estimator.fixed_device_variance is not None:
+                self.settings.variance_estimator.method = 'direct_sigmas'
+                #self.settings.variance_estimator.device_range = (self.settings.variance_estimator.fixed_device_variance, None)
+                print(f'# VarianceEstimator: Solving for variance using fixed device variance: {self.settings.variance_estimator.fixed_device_variance}')
+                self._run_ve_opt()
+
+            else:
+                print(f'# VarianceEstimator: Starting the variance estimator using {method} method')
+                self._run_ve_opt()
+                
+            print('# VarianceEstimator: Complete\n')
+                
+        # If not a spectral problem and not all variances are provided, they
+        # set to 1
+        elif not has_all_variances and not has_spectral_data:
+            for comp in self.components:
+                try:
+                    comp.variance = self.variances[comp.name]
+                except:
+                    comp.variance = 1
+        
+        print('# VarianceEstimator: All variances provided / concentration problem\n')
+
+        return None
     
+    def _pe_set_up(self, solve=True):
+
+        """Initializes and solves the ParameterEstimator for the ReactionModel"""
+
+        print('# ParameterEstimator: Creating instance\n')
+        self._create_estimator(estimator='p_estimator')
+        
+        setattr(self.p_estimator, 'ncp', self.settings.collocation.ncp)
+        variances = self.components.variances
+        self.variances = variances
+        
+        # The VE results can be used to initialize the PE
+        if 'v_estimator' in self.results_dict:
+            if self.settings.general.initialize_pe:
+                # Update PE using VE results
+                self._initialize_from_variance_trajectory()
+                # No initialization from simulation is needed
+                self.settings.parameter_estimator.sim_init = False
+ 
+            if self.settings.general.scale_pe:
+                # Scale variables from VE results
+                self._scale_variables_from_variance_trajectory()
+            
+            # Extract vairances
+            self.variances = self.results_dict['v_estimator'].sigma_sq
+        
+        # If using max device variance, the variances are calculated differently
+        elif self.settings.variance_estimator.max_device_variance:
+            self.variances = self.max_device_variance()
+        
+        # Optional variance scaling
+        if self.settings.general.scale_variances:
+            self.variances = self._scale_variances(self.variances)
+        
+        print(f'# ParameterEstimator: The variances being used are:\n {self.variances}')
+        
+        # Update PE solver settings and variances
+        self.settings.parameter_estimator.solver_opts = self.settings.solver
+        self.settings.parameter_estimator.variances = self.variances
+        
+        # Run the PE
+        if solve:
+            print('# ParameterEstimator: Solving the parameter fitting problem...\n')
+        else:
+            print('# ParameterEstimator: Generating objective and not solving\n')
+        
+        self._run_pe_opt(solve)
+        
+        print('\n# ParameterEstimator: Parameter fitting complete')
+        print(f'# KIPET procedure for {self.name} finished\n')
+
+        return None
+
+
     def _run_opt_core(self):
         """This runs the parameter fitting optimization problem. It will automatically
         perform the variance estimation step performed by the VarianceEstimator. The user
@@ -1809,101 +1916,12 @@ class ReactionModel(WavelengthSelectionMixins):
         
         # Some settings are required together, this method checks this
         self._update_related_settings()
+        self._ve_set_up()
+        self._pe_set_up()
         
-        """
-        VarianceEstimator
-        """
-        # Check if all component variances are given; if not run VarianceEstimator
-        has_spectral_data = self.spectra is not None
-        has_all_variances = self.components.has_all_variances
-        method = self.settings.variance_estimator.method
+        # Solve method should go here
         
-        # First check if VE is needed
-        if not has_all_variances and has_spectral_data:
         
-            # Create the VE
-            print('# VarianceEsitmator: Creating instance')
-            self._create_estimator(estimator='v_estimator')
-            self.settings.variance_estimator.solver_opts = self.settings.solver
-            # This returns None or the calculated device variance
-            max_device_variance = self.max_device_variance()
-            
-            # Using known device variance (best-case accuracy) --> sigma_range
-            if method == 'direct_sigmas' and self.settings.variance_estimator.fixed_device_variance is None:
-                print(f'# VarianceEstimator: Solving for range of fixed device variances between best and worst variances ({self.settings.variance_estimator.num_points} steps)')
-                self.settings.variance_estimator.device_range = (self.settings.variance_estimator.best_accuracy, max_device_variance)
-                variance_dict = self._run_ve_opt()
-                self.direct_sigma_dict = variance_dict
-                return variance_dict
-                
-            elif self.settings.variance_estimator.fixed_device_variance is not None:
-                self.settings.variance_estimator.method = 'direct_sigmas'
-                #self.settings.variance_estimator.device_range = (self.settings.variance_estimator.fixed_device_variance, None)
-                print(f'# VarianceEstimator: Solving for variance using fixed device variance: {self.settings.variance_estimator.fixed_device_variance}')
-                self._run_ve_opt()
-
-            else:
-                print(f'# VarianceEstimator: Starting the variance estimator using {method} method')
-                self._run_ve_opt()
-                
-            print('# VarianceEstimator: Complete\n')
-                
-        # If not a spectral problem and not all variances are provided, they
-        # set to 1
-        elif not has_all_variances and not has_spectral_data:
-            for comp in self.components:
-                try:
-                    comp.variance = self.variances[comp.name]
-                except:
-                    comp.variance = 1
-        
-        print('# VarianceEstimator: All variances provided / concentration problem\n')
-        """
-        ParameterEstimator
-        """
-        
-        print('# ParameterEstimator: Creating instance\n')
-        self._create_estimator(estimator='p_estimator')
-        
-        setattr(self.p_estimator, 'ncp', self.settings.collocation.ncp)
-        variances = self.components.variances
-        self.variances = variances
-        
-        # The VE results can be used to initialize the PE
-        if 'v_estimator' in self.results_dict:
-            if self.settings.general.initialize_pe:
-                # Update PE using VE results
-                self._initialize_from_variance_trajectory()
-                # No initialization from simulation is needed
-                self.settings.parameter_estimator.sim_init = False
- 
-            if self.settings.general.scale_pe:
-                # Scale variables from VE results
-                self._scale_variables_from_variance_trajectory()
-            
-            # Extract vairances
-            self.variances = self.results_dict['v_estimator'].sigma_sq
-        
-        # If using max device variance, the variances are calculated differently
-        elif self.settings.variance_estimator.max_device_variance:
-            self.variances = max_device_variance
-        
-        # Optional variance scaling
-        if self.settings.general.scale_variances:
-            self.variances = self._scale_variances(self.variances)
-        
-        print(f'# ParameterEstimator: The variances being used are:\n {self.variances}')
-        
-        # Update PE solver settings and variances
-        self.settings.parameter_estimator.solver_opts = self.settings.solver
-        self.settings.parameter_estimator.variances = self.variances
-        
-        # Run the PE
-        print('# ParameterEstimator: Solving the parameter fitting problem...\n')
-        self._run_pe_opt()
-        
-        print('\n# ParameterEstimator: Parameter fitting complete')
-        print(f'# KIPET procedure for {self.name} finished\n')
         
         # Save results in the results_dict
         self.results = self.results_dict['p_estimator']

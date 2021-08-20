@@ -6,11 +6,15 @@ fitting with the various models simultaneously.
 # Standard library imports
 import copy
 import inspect
+# import multiprocessing as mp
+# from multiprocessing import Process, Queue
+import os
 import pathlib
 import time
 
 # Third party imports
 import pandas as pd
+from pathos.pools import ProcessPool
 
 # Kipet library imports
 # import kipet.core_methods.data_tools as data_tools
@@ -18,7 +22,7 @@ from kipet.estimator_tools.multiple_experiments import MultipleExperimentsEstima
 from kipet.main_modules.reaction_model import ReactionModel
 from kipet.general_settings.settings import Settings
 from kipet.general_settings.unit_base import UnitBase
-
+from kipet.estimator_tools.multiprocessing_kipet import Multiprocess
 
 class ReactionSet:
     
@@ -300,7 +304,7 @@ class ReactionSet:
 
         return None
     
-    def run_opt(self, method='mee', strategy='trust-region'):
+    def run_opt(self, method='mee', strategy='trust-region', parallel=False, pre_solve=False):
         """This method will perform parameter fitting for all ReactionModels in
         the ReactionSet models attribute. If more than one ReactionModel instance
         is present, the MultipleExperimentEstiamtor is used to solve for the
@@ -330,14 +334,21 @@ class ReactionSet:
             print('# ReactionSet: Multiple ReactionModel instances detected')
             if method == "mee":
                 print('# ReactionSet: Starting multiple experiment estimator')
-                self._calculate_parameters()
+                
+                if parallel:
+                    self.solve_mp()
+                else:
+                    self._calculate_parameters()
+                    
                 self._create_multiple_experiments_estimator()
                 with Tee(filename): 
                     self._run_full_model()
             
             elif method == 'nsd':
                 print('# ReactionSet: Starting nested Schur decomposition estimator')
-                self._calculate_parameters()
+                if pre_solve:
+                    self._calculate_parameters()
+                    
                 with Tee(filename):  
                     self._mee_nsd(strategy=strategy)
             
@@ -371,13 +382,13 @@ class ReactionSet:
     def _calculate_parameters(self):
         """Uses the ReactionModel framework to calculate parameters instead of
         repeating this in the MEE
-
+        
         """
         for name, model in self.reaction_models.items():
             if not model._optimized:
                 model.run_opt()
             else:
-                print(f"Model {name} has already been optimized")
+                print(f"Model {model.name} has already been optimized")
 
         return None
 
@@ -513,3 +524,73 @@ class ReactionSet:
             reaction.plot()
         self.report_object = Report(list(self.reaction_models.values()))
         self.report_object.generate_report()
+        
+    def func(self, q, i):
+        print('starting')
+        print('process_id', os.getpid())
+        data = self.solve(self.reaction_models[f'reaction-{i}'])
+        q.put(data)
+        print('all done')
+
+    def solve(self, model):
+        """Uses the ReactionModel framework to calculate parameters instead of
+        repeating this in the MEE
+    
+        # Add mp here
+    
+        """
+        if not model._optimized:
+            model.run_opt()
+            print('Model has been optimized')
+        else:
+            print(f"Model {model.name} has already been optimized")
+    
+    
+        attr_list = ['name', 'results_dict']
+    
+        model_dict = {}
+        for attr in attr_list:
+            model_dict[attr] = getattr(model, attr)
+    
+        return model_dict['results_dict']
+    
+    def solve_mp(self):
+    
+        from multiprocessing import set_start_method, cpu_count
+        from kipet.model_tools.pyomo_model_tools import get_vars
+        
+        try:
+            set_start_method('fork')
+        except:
+            print('Already done')    
+    
+        mp = Multiprocess(self.func)
+        data = mp(num_processes = min(len(self.reaction_models), cpu_count()))
+        
+        self.mp_results = data
+        #print(data.keys())
+        estimator = 'p_estimator'
+        
+        for i, model in enumerate(self.reaction_models.values()):
+            model._pe_set_up(solve=False)
+            
+            setattr(model, 'results_dict', self.mp_results[i + 1])
+            setattr(model, 'results', self.mp_results[i + 1][estimator])
+            vars_to_init = get_vars(model.p_model)
+            #print(model.results_dict[estimator])
+            #print(vars_to_init)
+            
+            for var in vars_to_init:
+                if hasattr(model.results_dict[estimator], var) and var != 'S':
+                    getattr(model, estimator).initialize_from_trajectory(var, getattr(model.results_dict[estimator], var))
+                elif var == 'S' and hasattr(model.results_dict[estimator], 'S'):
+                    getattr(model, estimator).initialize_from_trajectory(var, getattr(model.results_dict[estimator], var))
+                else:
+                    print(f'Variable: {var} is not updated')
+            
+        return None
+    
+    
+    
+    
+    
