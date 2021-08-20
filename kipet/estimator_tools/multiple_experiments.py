@@ -275,6 +275,8 @@ class MultipleExperimentsEstimator(PEMixins, object):
             m = copy.copy(self.reaction_models[exp].p_model)
             
             # Quick fix - I don't know what is causing this
+            if hasattr(m, 'objective'):
+                m.del_component('objective')
             if hasattr(m, 'alltime_domain'):
                 m.del_component('alltime_domain')
             if hasattr(m, 'huplctime_domain'):
