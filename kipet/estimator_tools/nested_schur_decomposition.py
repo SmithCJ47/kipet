@@ -1,12 +1,27 @@
 """
-
 This is a new NSD module for use with IPOPT
 
-Goal: To be clean as possible with the implementation and to use as many of
-      the existing code as possible - it is all in the reduced_hessian already.
+
+TODO: 
+    
+    1. define the global and local parameters - DONE
+    2. check if scaling still works - may not be needed
+    
+    3. get cyipopt working with this
+    
+    4. test cyipopt with multiprocessing
+    5. speed improvements?
+    6. performance with bigger problems (spectra?)
+    7. clean and wrap into final problem
+    8. add other metrics for optimization (Tom's problems)
+    9. report findings
+    10. write paper
+
 """
 # Standard library imports
-# import copy
+from multiprocessing import set_start_method, cpu_count
+import os
+import platform
 
 # Third party imports
 import numpy as np
@@ -14,46 +29,21 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.offline import plot
 from pyomo.environ import (
-    Objective,
     Suffix,
     )
 from scipy.optimize import (
     Bounds,
     minimize,
     )
-
 from scipy.sparse import coo_matrix
 
 # KIPET library imports
-# from kipet.library.common.parameter_handling import (
-#     check_initial_parameter_values,
-#     calculate_parameter_averages,
-#     set_scaled_parameter_bounds,
-#     )
-# from kipet.library.common.parameter_ranking import (
-#     parameter_ratios,
-#     rank_parameters,
-#     )
-# from kipet.library.common.reduced_hessian import (
-#     add_global_constraints,
-#     calculate_reduced_hessian,
-#     optimize_model,
-#     calculate_duals,
-#     )
-# from kipet.library.post_model_build.scaling import (
-#     remove_scaling,
-#     scale_parameters,
-#     update_expression,
-#     )
-from kipet.model_components.objectives import (
-    conc_objective,
-    comp_objective,
-    )
-from kipet.estimator_tools.parameter_estimator import ParameterEstimator
-from kipet.calculation_tools.reduced_hessian import ReducedHessian
+from kipet.estimator_tools.multiprocessing_kipet import Multiprocess
+from kipet.estimator_tools.reduced_hessian_methods import calculate_reduced_hessian
 from kipet.estimator_tools.results_object import ResultsObject        
+from kipet.model_tools.pyomo_model_tools import get_vars
 
-DEBUG = False
+DEBUG = True
  
 
 class NSD:
@@ -67,12 +57,13 @@ class NSD:
                  global_parameters=None,
                  kwargs=None,
                  scaled=False,
+                 parallel=True,
                  ):
         
         kwargs = kwargs if kwargs is not None else {}
         parameter_name = kwargs.get('parameter_name', 'P')
         self.objective_multiplier = kwargs.get('objective_multiplier', 1)
-        self.global_parameters = global_parameters
+        
         self.isKipetModel = kwargs.get('kipet', True)
         self.scaled = scaled
         self.reduced_hessian_kwargs = {}
@@ -80,17 +71,9 @@ class NSD:
         pre_solve = False
         self._model_preparation(use_duals=True)
         self.model_dict = {name: r.p_model for name, r in models_dict.items()}
+        
         avg_param = calculate_parameter_averages(self.model_dict)
         self.strategy = strategy
-        self.d_init = {p: [v, -10, 10] for p, v in avg_param.items()}
-        self.d_init_unscaled = None
-        self.d_iter = []
-        
-        if init is not None:
-            for k, v in init.items():
-                self.d_init[k][0] = v
-        
-        print(self.d_init)
         
         self.method = 'trust-constr'
         
@@ -101,6 +84,42 @@ class NSD:
                     all_parameters.append(param)
         
         self.parameter_names = all_parameters
+        self.parameter_global = [v for v in all_parameters if v in global_parameters]
+        
+        print(f'{self.parameter_names = }')
+        print(f'{self.parameter_global = }')
+        self.d_init = {p: v for p, v in avg_param.items() if p in global_parameters}
+        self.d_init_unscaled = None
+        self.d_iter = []
+        self.parallel = parallel
+        
+        if init is not None:
+            for k, v in init.items():
+                if k in global_parameters:
+                    self.d_init[k][0] = v
+        
+        print(self.d_init)
+        
+        self.x = [0 for k, v in self.d_init.items()]
+        self.d = [0 for i in range(len(self.reaction_models))]
+        self.M = pd.DataFrame(np.zeros((len(self.parameter_global), len(self.parameter_global))), index=self.parameter_global, columns=self.parameter_global)
+        self.m = pd.DataFrame(np.zeros((len(self.parameter_global), 1)), index=self.parameter_global, columns=['dual'])
+        self.duals = [0 for i in range(len(self.reaction_models))]
+        self.rh = [0 for i in range(len(self.reaction_models))]
+        self.obj = [0 for i in range(len(self.reaction_models))]
+        self.stub = [None for v in self.reaction_models.values()]
+        self.final_param = {}
+        
+       
+        print(f'{self.x = }')
+        if self.parallel:
+            if platform.system() == 'Darwin':
+                try:
+                    set_start_method('fork')
+                    print('# Changing Multiprocessing start method to "fork"')
+                except:
+                    print('# Multiprocessing start method already fixed')    
+        
         
     def __str__(self):
         
@@ -133,9 +152,16 @@ class NSD:
             results = self.trust_region()
             
         elif self.strategy == 'newton-step':
-            results = self.run_simple_newton_step(alpha=0.1, iterations=15) 
+            results = self.run_simple_newton_step(alpha=0.15, iterations=80) 
+        else:
+            pass
         
-        return results
+        self.final_param = dict(zip(self.parameter_names, self.d_iter[-1]))
+        
+        if self.parallel:
+            self.solve_mp_simulation()
+        
+        return None
     
     
     def _model_preparation(self, use_duals=True):
@@ -194,9 +220,54 @@ class NSD:
         upper_bounds = np.array(upper_bounds, dtype=float) 
         bounds = Bounds(lower_bounds, upper_bounds, True)
         return bounds
+
     
-    @staticmethod
-    def objective_function(x, scenarios, parameter_names):
+    def _update_x_impl(self, x):
+        
+        """Yet another wrapper for the objective function"""
+        
+        print(f'{self.parameter_global = }')
+        objective_value = 0
+        
+        if self.parallel:
+            objective_value = self.solve_mp('objective', [x, self.parameter_names, {}])
+        else:
+            for i, model in enumerate(self.model_list):
+                objective_value += self.solve_element('obj', model, x, i, True)
+                
+        self.objective = objective_value
+        self.x = x
+        
+        return None
+    
+    
+    def _update_m_impl(self, x, optimize=False):
+        
+        m = pd.DataFrame(np.zeros((len(self.parameter_global), 1)), index=self.parameter_global, columns=['dual'])
+        for i, model in enumerate(self.model_list):
+            duals = self.solve_element('duals', model, x, i, optimize)
+            for param in m.index:
+                if param in duals.keys():
+                    m.loc[param] = m.loc[param] + duals[param]
+
+        self.m = m
+        
+    
+    def _update_M_impl(self, x, optimize=False):
+        
+        M = pd.DataFrame(np.zeros((len(self.parameter_global), len(self.parameter_global))), index=self.parameter_global, columns=self.parameter_global)
+        for i, model in enumerate(self.model_list):  
+            reduced_hessian = self.solve_element('rh', model, x, i, optimize)
+            M = M.add(reduced_hessian).combine_first(M)
+            M = M[self.parameter_global]
+            M = M.reindex(self.parameter_global)
+            print(f'This is M for {i}')
+            print(M)
+                
+        self.M = M
+    
+    
+    def objective_function(self, x, scenarios, parameter_names):
         """Inner problem calculation for the NSD
         
         Args:
@@ -213,27 +284,28 @@ class NSD:
             stuck = '*'*50
             print(stuck)
             print('\nCalculating objective')
-            
         
-        for i, p in enumerate(parameter_names):
-            print(f'{p} = {x[i]:0.12f}')
+        print('# Objective Function:')
+        print(f'# {x = }')
+        print(f'# {self.x = }')
         
-        objective_value = 0
-        for i, model in enumerate(scenarios):
-            
-            rh = ReducedHessian(model, file_number=i)
-            rh.parameter_set = parameter_names
-            rh.optimize_model(d=x)
-            objective_value += model.objective.expr()
+        if not np.array_equal(x, self.x):
+            print('# The values do not match, updating objective function')
+            self._update_x_impl(x)
+        else:
+            print('# The values match, no optimization of the model')
         
+        #for i, p in enumerate(parameter_names):
+        #    print(f'{p} = {x[i]:0.12f}')
+                
         if DEBUG:
-            print(f'Obj: {objective_value}')
+            print(f'Obj: {self.objective}')
             print(stuck)
             
-        return objective_value
-    
-    @staticmethod
-    def calculate_m(x, scenarios, parameter_names):
+        return self.objective
+
+
+    def calculate_m(self, x, *args):
         """Calculate the vector of duals for the NSD
         
         Args:
@@ -252,41 +324,25 @@ class NSD:
             stuck = '*'*50
             print(stuck)
             print('\nCalculating m')
-        
-        m = pd.DataFrame(np.zeros((len(parameter_names), 1)), index=parameter_names, columns=['dual'])
-        
-        kwargs = {
-            'param_con_method': 'global',
-            'kkt_method': 'k_aug',
-            'set_param_bounds': False,
-            'param_set_name': 'parameter_names',
-            }
-        
-        for i, model_opt in enumerate(scenarios):
             
-            rh = ReducedHessian(model_opt, file_number=i, **kwargs)
-            rh.parameter_set = parameter_names
+        optimize = False
+        if not np.array_equal(x, self.x):
+            print('# The values do not match, updating objective function')
+            optimize = True
+        else:
+            print('# The values match, no optimization of the model')
             
-            if not hasattr(model_opt, 'd'):
-                rh.optimize_model(d=x)
-            
-            duals = rh.calculate_duals() 
-            for param in m.index:
-                if param in duals.keys():
-                    m.loc[param] = m.loc[param] + duals[param]
+        self._update_m_impl(x, optimize=optimize)
 
-            rh.delete_sol_files()
-
-        m = m.values.flatten()
+        m = self.m.values.flatten()
         
         if DEBUG:
-            print(f'm: {m}')
+            print(f'{m = }')
             print(stuck)
         
         return m
     
-    @staticmethod
-    def calculate_M(x, scenarios, parameter_names):
+    def calculate_M(self, x, *args):
         """Calculate the sum of reduced Hessians for the NSD
         
         Args:
@@ -305,20 +361,18 @@ class NSD:
             print(stuck)
             print('\nCalculating M')
             
-        M_size = len(parameter_names)
-        M = pd.DataFrame(np.zeros((M_size, M_size)), index=parameter_names, columns=parameter_names)
+        optimize = False
+        if not np.array_equal(x, self.x):
+            print('# The values do not match, updating objective function')
+            optimize = True
+        else:
+            print('# The values match, no optimization of the model')
             
-        for i, model in enumerate(scenarios):
-            
-            rh = ReducedHessian(model, file_number=i)
-            rh.parameter_set = parameter_names
-            reduced_hessian = rh.calculate_reduced_hessian()
-            
-            M = M.add(reduced_hessian).combine_first(M)
-            M = M[parameter_names]
-            M = M.reindex(parameter_names)
+        self._update_M_impl(x, optimize=optimize)
+    
         
-        M = M.values# + np.eye(M_size)*0.1
+        print(type(self.M.values))
+        M = self.M.values# + np.eye(M_size)*0.1
         
         if DEBUG:
             print(f'M: {M}')
@@ -353,7 +407,8 @@ class NSD:
         
         for model in self.model_list:
             for param, model_param in model.P.items():
-                model_param.value = self.d_init[param][0]
+                if param in self.parameter_global:
+                    model_param.value = self.d_init[param][0]
                 
         d_vals =  [d[0] for k, d in self.d_init.items()]
         
@@ -498,9 +553,10 @@ class NSD:
             raise ValueError('The chosen Trust Region method is not valid')
 
         tr_options={
-            #'xtol': 1e-6,
+            'xtol': 1e-4,
             }
-        
+    
+        print('# Starting Trust-Region algorithm')
         results = minimize(
             self.objective_function, 
             d_vals,
@@ -513,6 +569,7 @@ class NSD:
             options=tr_options,
         )
             
+        print('# Finished with Trust-Region algorithm')
         # End internal methods
         self.parameter_scaling_conversion(results.x)
         results_kipet = self.get_results()
@@ -538,8 +595,13 @@ class NSD:
             )
            
             # Get the M matrices to determine search direction
-            M = self.calculate_M(d_vals, self.model_list, self.parameter_names)
-            m = self.calculate_m(d_vals, self.model_list, self.parameter_names)
+            M = self.calculate_M(d_vals)
+            m = self.calculate_m(d_vals)
+            
+            print('NS data')
+            print(f'{M = }')
+            print(f'{m = }')
+            
             
             # Calculate the search direction
             d = np.linalg.inv(M) @ -(m)
@@ -547,10 +609,13 @@ class NSD:
             self.callback(d_vals)
             # self.d_iter.append(d_vals)
             
+            print(f'{d = }')
+            print(f'{d_vals = }')
+            
             print(f'Current Parameters in Iteration {i}: {d_vals}')
             # Update model parameters - This is not set-up properly - repeats calc above
             for model in self.model_list:
-                for j, param in enumerate(self.parameter_names):
+                for j, param in enumerate(self.parameter_global):
                     model.P[param].set_value(d[j]*alpha + model.P[param].value)
                     
             if max(abs(d)) <= opt_tol:
@@ -573,7 +638,9 @@ class NSD:
     
     def callback(self, x, *args):
         """Method to record the parameters in each iteration"""
+        #if not [x] in self.d_iter:
         self.d_iter.append(x)
+        
     
     def get_results(self):
         
@@ -616,6 +683,242 @@ class NSD:
         plot(fig)
     
         return None
+    
+    
+    def general_update(self, model, x, file_number):
+        """Updates the model using the reduced hessian method using global,
+        fixed parameters. This may need to be updated to handle parameters that
+        are not fixed, such as local effects.
+        
+        :param ConcreteModel model: The current model of the system used in optimization
+        :param np.ndarra x: The current parameter array
+        :param int file_number: The index of the model
+        
+        :return: None
+        
+        """
+        print(f'{self.parameter_global = }')
+        
+        rh, stub, duals = calculate_reduced_hessian(
+            model, 
+            d=x, 
+            optimize=True,
+            parameter_set=self.parameter_names,
+            fix_method='global', 
+            rho=10, 
+            scaled=False,
+            stub=None,
+            return_duals=True,
+            global_set=self.parameter_global)
+        
+        self.rh[file_number] = rh
+        self.stub[file_number] = stub
+        self.duals[file_number] = duals
+        self.obj[file_number] = model.objective.expr()
+
+    
+    def solve_element(self, element, model, x, number, optimize=True):
+        
+        if optimize:
+            self.general_update(model, x, number)
+        values = getattr(self, element)[number]
+        print(f'{element} = {values}')
+        
+        return values
+    
+    
+    def solve_model_objective_mp(self, model, x, parameter_names, file_number, kwargs={}):
+        """Wrapper for obtaining the objective function value
+        
+        """
+        rh, stub, duals, param_values = self.general_update_mp(model, x, file_number)
+        
+        return model.objective.expr(), rh, stub, duals, param_values
+    
+    
+    def general_update_mp(self, model, x, file_number):
+        
+        rh, stub, duals = calculate_reduced_hessian(
+            model, 
+            d=x, 
+            optimize=True,
+            parameter_set=self.parameter_names,
+            fix_method='global', 
+            rho=10, 
+            scaled=False,
+            stub=None,
+            return_duals=True,
+            global_set=self.parameter_global)
+        
+        param_values = {k: v.value for k, v in model.P.items()}
+        
+        return rh, stub, duals, param_values
+    
+    
+    # def m_func(self, q, i, args):
+    #     """This takes the input and passes it to the target function
+        
+    #     """
+    #     print('# Starting Multiprocessing Procedure')
+    #     print(f'# Process ID: {os.getpid()}')
+        
+    #     x = args[0]
+    #     parameter_names = args[1]
+    #     kwargs = args[2]
+        
+    #     model_to_solve = self.model_list[i - 1]
+        
+    #     data = self.solve_element('duals', model_to_solve, x, parameter_names, i, kwargs)
+    #     q.put(data)
+        
+    #     print('# Finished Multiprocessing Procedure')
+    
+    
+    # def M_func(self, q, i, args):
+    #     """This takes the input and passes it to the target function
+        
+    #     """
+    #     print('# Starting Multiprocessing Procedure')
+    #     print(f'# Process ID: {os.getpid()}')
+        
+    #     x = args[0]
+    #     parameter_names = args[1]
+    #     kwargs = args[2]
+        
+    #     model_to_solve = self.model_list[i - 1]
+        
+    #     data = self.solve_element('rh', model_to_solve, x, parameter_names, i, kwargs)
+    #     q.put(data)
+        
+    #     print('# Finished Multiprocessing Procedure')
+
+
+    def obj_func(self, q, i, args):
+        """This takes the input and passes it to the target function
+        
+        """
+        print('# Starting Multiprocessing Procedure')
+        print(f'# Process ID: {os.getpid()}')
+        
+        x = args[0]
+        parameter_names = args[1]
+        kwargs = args[2]
+        
+        model_to_solve = self.model_list[i - 1]
+        
+        data = self.solve_model_objective_mp(model_to_solve, x, parameter_names, i, kwargs)
+        q.put(data)
+        
+        print('# Finished Multiprocessing Procedure')
+
+    
+    def solve_mp(self, func, args):
+
+        # if func == 'objective':
+        mp = Multiprocess(self.obj_func)
+        data = mp(args, num_processes = min(len(self.model_list), cpu_count()))
+        obj = 0 
+ 
+        for i, d in enumerate(data.values()):    
+            obj += d[0]
+            self.rh[i] = d[1]
+            self.stub[i] = d[2]
+            self.duals[i] = d[3]
+            self.d[i] = d[4]
+        
+        return obj
+            
+        # elif func == 'M':
+        #     mp = Multiprocess(self.M_func)
+        #     data = mp(args, num_processes = min(len(self.reaction_models), cpu_count()))
+            
+        #     return data
+            
+            
+        # elif func == 'm':
+        #     mp = Multiprocess(self.m_func)
+        #     data = mp(args, num_processes = min(len(self.reaction_models), cpu_count()))
+            
+        #     results = {}
+            
+        #     for key, value in data.items():
+        #         for k, v in value.items():
+        #             if k not in results:
+        #                 results[k] = v
+        #             else:
+        #                 results[k] += v
+                    
+        #     return results
+            
+        # else:
+        #     raise ValueError('You have made a big coding mistake')
+            
+        #     return None
+        
+        
+    def func_simulation(self, q, i):
+        print('starting')
+        print('process_id', os.getpid())
+        
+        model_to_solve = list(self.reaction_models.values())[i - 1]
+        model_to_solve.parameters.update('value', self.d[i - 1])
+        # for param, p_obj in model_to_solve._P.items():
+        #     if param in self.d[i-1]:
+        #         p_obj.set_value(self.d[i-1][param])
+        
+        data = self.solve_simulation(model_to_solve)
+        q.put(data)
+        print('all done')
+
+    def solve_simulation(self, model):
+        """Uses the ReactionModel framework to calculate parameters instead of
+        repeating this in the MEE
+    
+        # Add mp here
+    
+        """
+        model.simulate(self.final_param)
+        print('Model has been simulated')
+
+        attr_list = ['name', 'results_dict']
+    
+        model_dict = {}
+        for attr in attr_list:
+            model_dict[attr] = getattr(model, attr)
+    
+        return model_dict['results_dict']
+    
+    def solve_mp_simulation(self):
+       
+        mp = Multiprocess(self.func_simulation)
+        data = mp(num_processes = min(len(self.reaction_models), cpu_count()))
+        
+        self.mp_results = data
+        simulator = 'simulator'
+        estimator = 'p_estimator'
+        
+        print(f'{self.d = }')
+        
+        for i, model in enumerate(self.reaction_models.values()):
+            
+            model._pe_set_up(solve=False)
+            
+            setattr(model, 'results_dict', self.mp_results[i + 1])
+            setattr(model, 'results', self.mp_results[i + 1][simulator])
+            print(model.models)
+            vars_to_init = get_vars(model.p_model)
+            
+            for var in vars_to_init:
+                if hasattr(model.results_dict[simulator], var) and var != 'S':
+                    getattr(model, estimator).initialize_from_trajectory(var, getattr(model.results_dict[simulator], var))
+                elif var == 'S' and hasattr(model.results_dict[simulator], 'S'):
+                    getattr(model, estimator).initialize_from_trajectory(var, getattr(model.results_dict[simulator], var))
+                else:
+                    print(f'Variable: {var} is not updated')
+            
+        return None
+    
+    
     
             
 class Optproblem(object):
@@ -686,6 +989,8 @@ class Optproblem(object):
 def calculate_parameter_averages(model_dict):
     
     p_dict = {}
+    lb = {}
+    ub = {}
     c_dict = {}
     
     for key, model in model_dict.items():
@@ -697,59 +1002,14 @@ def calculate_parameter_averages(model_dict):
                 p_dict[param] += obj.value
                 c_dict[param] += 1
                 
-    avg_param = {param: p_dict[param]/c_dict[param] for param in p_dict.keys()}
+            lb[param] = obj.lb
+            ub[param] = obj.ub
+                
+    avg_param = {param: [p_dict[param]/c_dict[param], lb[param], ub[param]] for param in p_dict.keys()}
     
     return avg_param
 
 if __name__ == '__main__':
    
     pass
-    # from kipet.new_examples.Ex_18_NSD import generate_models, generate_models_cstr
-    
-    # # Generate the ReactionModels (at some point KipetModel)
-    # models = generate_models()
-
-    # # Create the NSD object using the ReactionModels list
-    # kwargs = {'kipet': True,
-    #           'objective_multiplier': 1
-    #           }
-    # # The objective_multiplier is helpful when the objective is already small
-    
-    # # Choose the method used to optimize the outer problem
-    # strategy = 'ipopt'
-    # #strategy = 'newton-step'
-    # #strategy = 'trust-region'
-    
-    # nsd = NSD(models, kwargs=kwargs)
-    
-    # # Set the initial values
-    # nsd.set_initial_value({'k1' : 0.6,
-    #                        'k2' : 1.2}
-    #                       )
-    
-    # # nsd.set_initial_value({'Cfa' : 1.500000,
-    # #                         'rho' : 1.600000,
-    # #                         'ER' : 1.100000,
-    # #                         'k' : 1.100000,
-    # #                         'Tfc' : 1.100000,
-    # #                         }
-    # #                       )
-    
-    # print(nsd.d_init)
-    
-    # if strategy == 'ipopt':
-    #     # Runs the IPOPT Method
-    #     results = nsd.ipopt_method(scaled=True)
-    
-    # elif strategy == 'trust-region':
-    #     # Runs the Trust-Region Method
-    #     results = nsd.trust_region(scaled=False)
-    #     # Plot the parameter value paths (Trust-Region only)
-    #     nsd.plot_paths()
-        
-    # elif strategy == 'newton-step':
-    #     # Runs the NSD using simple newton steps
-    #     nsd.run_simple_newton_step(alpha=0.1, iterations=15)  
-    
-    # # Plot the results using ReactionModel format
-    # nsd.plot_results()
+   

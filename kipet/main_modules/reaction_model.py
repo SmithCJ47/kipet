@@ -1310,6 +1310,7 @@ class ReactionModel(WavelengthSelectionMixins):
         self._from_trajectories('simulator')
         # Run the simulation
         self._run_simulation(parameters)
+        print('# Simulator: Finished performing simulation')
         
         return None
     

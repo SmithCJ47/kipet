@@ -70,7 +70,7 @@ def check_initial_parameter_values(model_object):
         bound_push = 1.05
         
         if v.value >= v.ub:
-            v.set_value(param.ub/bound_push)
+            v.set_value(v.ub/bound_push)
         
         if v.value <= v.lb:
             v.set_value(v.lb*bound_push)

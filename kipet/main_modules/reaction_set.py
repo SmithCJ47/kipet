@@ -14,7 +14,6 @@ import time
 
 # Third party imports
 import pandas as pd
-from pathos.pools import ProcessPool
 
 # Kipet library imports
 # import kipet.core_methods.data_tools as data_tools
@@ -350,7 +349,7 @@ class ReactionSet:
                     self._calculate_parameters()
                     
                 with Tee(filename):  
-                    self._mee_nsd(strategy=strategy)
+                    self._mee_nsd(strategy=strategy, parallel=parallel)
             
             else:
                 raise ValueError("Not a valid method for optimization")
@@ -409,7 +408,7 @@ class ReactionSet:
 
         return results
 
-    def _mee_nsd(self, strategy='ipopt'):
+    def _mee_nsd(self, strategy='ipopt', parallel=False):
         """Performs the NSD on the multiple ReactionModel instances
 
         :parameter str strategy: Method used to control the outer problem
@@ -421,7 +420,7 @@ class ReactionSet:
         """
         from kipet.estimator_tools.nested_schur_decomposition import NSD
         kwargs = {'kipet': True,
-                  'objective_multiplier': 1
+                  'objective_multiplier': 1,
                   }
 
         if self.global_parameters is not None:
@@ -431,7 +430,8 @@ class ReactionSet:
 
         self.nsd = NSD(self.reaction_models,
                         strategy=strategy,
-                        global_parameters=global_parameters,
+                        global_parameters=self.global_parameters,
+                        parallel=parallel,
                         kwargs=kwargs)
 
         #print(self.nsd.d_init)
@@ -528,7 +528,10 @@ class ReactionSet:
     def func(self, q, i):
         print('starting')
         print('process_id', os.getpid())
-        data = self.solve(self.reaction_models[f'reaction-{i}'])
+        
+        model_to_solve = list(self.reaction_models.values())[i - 1]
+        
+        data = self.solve(model_to_solve)
         q.put(data)
         print('all done')
 
@@ -558,11 +561,14 @@ class ReactionSet:
     
         from multiprocessing import set_start_method, cpu_count
         from kipet.model_tools.pyomo_model_tools import get_vars
+        import platform
         
-        try:
-            set_start_method('fork')
-        except:
-            print('Already done')    
+        if platform.system() == 'Darwin':
+            try:
+                set_start_method('fork')
+                print('# Changing Multiprocessing start method to "fork"')
+            except:
+                print('# Multiprocessing start method already fixed')   
     
         mp = Multiprocess(self.func)
         data = mp(num_processes = min(len(self.reaction_models), cpu_count()))

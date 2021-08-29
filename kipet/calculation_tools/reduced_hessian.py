@@ -206,7 +206,7 @@ class ReducedHessian:
             print(J.shape)
             
 
-        self.delete_sol_files()
+            self.delete_sol_files()
 
         self.kkt_data = {
             'J': J,
@@ -370,7 +370,8 @@ class ReducedHessian:
                     tee=True,
                     logfile=tmpfile_i,
                     )
-        # print(self.model_object.P.display())
+        print('THE OPT IS FIN')
+        print(self.model_object.P.display())
 
         # Create the file object so that it can be deleted
         self.get_file_info()
