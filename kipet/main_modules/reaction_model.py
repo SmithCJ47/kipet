@@ -220,6 +220,7 @@ class ReactionModel(WavelengthSelectionMixins):
         self._sim_output = ''
         self._output = ''
         self._fixed_states = []
+        self.min_variance = None
         
         if model is not None:
             self._copy_from_model(model)
@@ -1871,6 +1872,11 @@ class ReactionModel(WavelengthSelectionMixins):
         # Update PE solver settings and variances
         self.settings.parameter_estimator.solver_opts = self.settings.solver
         self.settings.parameter_estimator.variances = self.variances
+        
+        if self.min_variance is None:
+            self.min_variance = min([v for v in self.variances.values()])
+        #self.min_variance = min(self.min_variance, min([v for v in self.variances.values()]))
+        self.settings.parameter_estimator.min_variance = self.min_variance
         
         # Run the PE
         if solve:
