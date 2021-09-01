@@ -91,7 +91,7 @@ class NSD:
         print(f'{self.parameter_global = }')
         self.d_init = {p: v for p, v in avg_param.items() if p in global_parameters}
         self.d_init_unscaled = None
-        self.d_iter = []
+        self.d_iter = []# {v.name : [] for v in self.reaction_models.values()}
         self.parallel = parallel
         
         if init is not None:
@@ -102,7 +102,7 @@ class NSD:
         print(self.d_init)
         
         self.x = [0 for k, v in self.d_init.items()]
-        self.d = [0 for i in range(len(self.reaction_models))]
+        self.d = {k : 0 for k in self.reaction_models}
         self.M = pd.DataFrame(np.zeros((len(self.parameter_global), len(self.parameter_global))), index=self.parameter_global, columns=self.parameter_global)
         self.m = pd.DataFrame(np.zeros((len(self.parameter_global), 1)), index=self.parameter_global, columns=['dual'])
         self.duals = [0 for i in range(len(self.reaction_models))]
@@ -231,7 +231,7 @@ class NSD:
         objective_value = 0
         
         if self.parallel:
-            objective_value = self.solve_mp('objective', [x])
+            objective_value = self.solve_mp('objective', [x, [k for k in self.reaction_models.keys()]])
         else:
             for i, model in enumerate(self.model_list):
                 objective_value += self.solve_element('obj', model, x, i, True)
@@ -297,8 +297,8 @@ class NSD:
         #print_debug('\nCalculating objective')
         
         #print_debug('# Objective Function:')
-        # print(f'{x = }')
-        # print(f'{self.x = }')
+        #print(f'{x = }')
+        #print(f'{self.x = }')
         
         if not np.array_equal(x, self.x):
             #print('# The values do not match, updating objective function')
@@ -817,16 +817,17 @@ class NSD:
     def solve_mp(self, func, args):
 
         mp = Multiprocess(self.obj_func)
-        data = mp(args, num_processes = min(len(self.model_list), cpu_count()))
+        data = mp([args[0]], num_processes = min(len(self.model_list), cpu_count()))
         obj = 0 
- 
+        model_names = args[1]
+    
         for i, d in enumerate(data.values()):    
             obj += d[0]
             self.rh[i] = d[1]
             self.stub[i] = d[2]
             self.duals[i] = d[3]
             self.grad[i] = d[4]
-            self.d[i] = d[5]
+            self.d[model_names[i]] = d[5]
         
         return obj
 
@@ -835,11 +836,14 @@ class NSD:
         print('starting')
         print('process_id', os.getpid())
         
+        model_names = [k for k in self.reaction_models.keys()]
         model_to_solve = list(self.reaction_models.values())[i - 1]
-        model_to_solve.parameters.update('value', self.d[i - 1])
+        model_to_solve.parameters.update('value', self.d[model_names[i - 1]])
         # for param, p_obj in model_to_solve._P.items():
         #     if param in self.d[i-1]:
         #         p_obj.set_value(self.d[i-1][param])
+        
+        #print(model_to_solve.parameters)
         
         data = self.solve_simulation(model_to_solve)
         q.put(data)
@@ -852,7 +856,7 @@ class NSD:
         # Add mp here
     
         """
-        model.simulate(self.final_param)
+        model.simulate(self.d[model.name])
         print('Model has been simulated')
 
         attr_list = ['name', 'results_dict']
