@@ -37,6 +37,8 @@ colors += ['#4285F4', '#DB4437', '#F4B400', '#0F9D58',
                      '#185ABC', '#B31412', '#EA8600', '#137333',
                      '#d2e3fc', '#ceead6']
 
+colors *= 5
+
 # Use for making SVGs
 
 # plot_options = {

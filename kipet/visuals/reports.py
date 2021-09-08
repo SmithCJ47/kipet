@@ -270,6 +270,46 @@ class Report:
             
         return odes_new
     
+    
+    @staticmethod
+    def get_chart_file_dir(abs_name):
+        """Shortens the absolute paths to relative paths
+        
+        :param str abs_name: The absolute path name
+        
+        :return: The relative path
+        :rtype: pathlib.Path
+        
+        """        
+        file = Path(abs_name)
+        file_dir = file.parents[0].stem
+        new_path = Path('charts').joinpath(file_dir, file.name)
+        return new_path
+    
+    def create_zip_file(self, save_dir, charts_dir):
+        """This generates a ZIP object to hold the report and charts
+        
+        :param pathlib.Path save_dir: The current directory where results are saved
+        :param pathlib.Path chart_dir: The path to the charts
+        
+        :return: None
+        
+        """
+        from zipfile import ZipFile
+
+        folder = save_dir
+        filename = 'report'
+        chart_files = retrieve_file_paths(charts_dir)
+        output_file_name = folder.joinpath(f'{filename}.zip')
+        zip_obj = ZipFile(output_file_name, 'w')
+        zip_obj.write((save_dir / 'report.html').resolve(), 'report.html')
+        for file in chart_files:
+            file_path = self.get_chart_file_dir(file)
+            zip_obj.write(file, file_path)
+        zip_obj.close()
+        
+        return None
+
         
     def generate_report(self):
         """Generates a full HTML report for the KIPET model.
@@ -317,7 +357,8 @@ class Report:
             source_code = 'Not found or from a Jupyter Notebook'
         
         user_dir = Path(user_file).parent
-        filename = (user_dir / 'results' / f'{user_stem}-{time}' / 'report.html').resolve()
+        final_dir = (user_dir / 'results' / f'{user_stem}-{time}').resolve()
+        filename = (final_dir / 'report.html').resolve()
         
         env = Environment( loader = FileSystemLoader(templates_dir) )
 
@@ -326,7 +367,7 @@ class Report:
         problem_text = "This is an automatically generated report presenting the results found using KIPET."
              
         log_orig = (user_dir / f'log-{user_stem}-{time}.txt').resolve()
-        log_file = (user_dir / 'results' / f'{user_stem}-{time}' /  'log.txt').resolve()
+        log_file = (final_dir / 'log.txt').resolve()
         
         if log_orig.is_file():
             log_orig.rename(log_file)
@@ -339,17 +380,19 @@ class Report:
             name = reaction_model.name
             model_dict[name] = {}
             model_dict[name]['time'] = reaction_model.timestamp
-            charts_dir = (user_dir / 'results'/  f'{user_stem}-{time}' / 'charts' / f'{reaction_model.name}').resolve()
+            charts_dir = (final_dir / 'charts' / f'{reaction_model.name}').resolve()
             
             # Concentration profiles
-            model_dict[name]['chart_C_files'] = [x for x in charts_dir.glob(f'all-concentration-profiles{suffix}') if x.is_file()]
-            model_dict[name]['chart_S_files'] = [x for x in charts_dir.glob(f'absorbance-spectra-all{suffix}') if x.is_file()]
-            model_dict[name]['chart_U_files'] = sorted([x for x in charts_dir.glob(f'*state-profile{suffix}') if x.is_file()])
-            model_dict[name]['chart_Y_files'] = sorted([x for x in charts_dir.glob(f'*profile{suffix}') if x.is_file() and x not in model_dict[name]['chart_U_files']])
+            model_dict[name]['chart_C_files'] = [self.get_chart_file_dir(x) for x in charts_dir.glob(f'all-concentration-profiles{suffix}') if x.is_file()]
+            model_dict[name]['chart_S_files'] = [self.get_chart_file_dir(x) for x in charts_dir.glob(f'absorbance-spectra-all{suffix}') if x.is_file()]
+            model_dict[name]['chart_U_files'] = sorted([self.get_chart_file_dir(x) for x in charts_dir.glob(f'*state-profile{suffix}') if x.is_file()])
+            model_dict[name]['chart_Y_files'] = sorted([self.get_chart_file_dir(x) for x in charts_dir.glob(f'*profile{suffix}') if x.is_file() and x not in model_dict[name]['chart_U_files']])
 
             data_chart_files = None
             spectral_info = None
             spectra_file = None
+            
+            print(f'{model_dict[name]["chart_C_files"]= }')
             
             if reaction_model.spectra is not None:
                 spectra_file = reaction_model.spectra.file if reaction_model.spectra.file is not None else 'Not provided or custom'
@@ -523,6 +566,9 @@ class Report:
                 time = time,
             ))
         
+        
+        self.create_zip_file(final_dir, charts_dir)
+        
         webbrowser.open('file://' + os.path.realpath(filename))
             
         return None
@@ -541,6 +587,25 @@ def dimensionless_check(units):
         return '-'
     else:
         return units.u
+    
+
+def retrieve_file_paths(dir_name):
+ 
+  # setup file paths variable
+  filePaths = []
+   
+  # Read all directory, subdirectories and file lists
+  for root, directories, files in os.walk(dir_name):
+    for filename in files:
+        # Create the full filepath by using os module.
+        filePath = os.path.join(root, filename)
+        filePaths.append(filePath)
+         
+  # return all paths
+  return filePaths
+    
+    
+
     
 
 if __name__ == '__main__':
