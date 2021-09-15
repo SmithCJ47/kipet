@@ -202,6 +202,7 @@ class ReactionModel(WavelengthSelectionMixins):
         self.__flag_odes_built = False
         self.__flag_algs_built = False
         self._custom_objective = None
+        self._custom_constraints = []
         self._optimized = False
         self._dosing_points = None
         self._has_dosing_points = False
@@ -220,8 +221,6 @@ class ReactionModel(WavelengthSelectionMixins):
         self._sim_output = ''
         self._output = ''
         self._fixed_states = []
-        self.min_variance = None
-        self.min_variance_global = None
         
         if model is not None:
             self._copy_from_model(model)
@@ -961,11 +960,51 @@ class ReactionModel(WavelengthSelectionMixins):
         if not kwargs.get('active', True):
             expr = 0
         expr_ = Expression(name, expr)
-        expr_.check_division()
+        #expr_.check_division()
         self.algs_dict.update(**{name: expr_})
         
         return expr
         
+    
+    def add_constraint(self, expr):
+        """Adds a custom constraint to help avoid numberical problems
+        
+        :param str name: The name used to identify the reaction
+        :param expr: The expression representing the reaction
+        :type expr: Pyomo expression
+        
+        **Keyword arguments**
+        
+        :param str description: An optional description of the expression
+        :param bool is_reaction: Indicates whehter the expression is a reaction (see :func:`add_reaction`)
+        
+        :return: Returns a Pyomo variable representing the expression such that it can be used in model building
+        :rtype: Pyomo Expression
+        """        
+        
+        
+        # Adds algebraics anyways, for comparison purposes
+
+        # if name not in self.algebraics.names:
+
+        #     self._add_model_component('algebraic', 
+        #                             2, 
+        #                             self.__var.algebraic, 
+        #                             name, 
+        #                             **kwargs)
+        
+        # if not kwargs.get('active', True):
+        #     expr = 0
+        expr_ = Expression(f'c_{len(self._custom_constraints) - 1}', expr)
+        #expr_.check_division()
+        # self.algs_dict.update(**{name: expr_})
+        
+        self._custom_constraints.append(expr_)
+        
+        print(f'{self._custom_constraints = }')
+        
+        
+        return expr
     
     def add_ode(self, ode_var, expr):
         """Method to add an ode expression to the ReactionModel
@@ -1136,6 +1175,9 @@ class ReactionModel(WavelengthSelectionMixins):
                     self._builder.set_algebraics_rule(self.algs, asdict=True)
                 else:
                     self._builder.set_algebraics_rule(self.algs)
+                    
+            if len(self._custom_constraints) != 0:
+                self._builder.set_custom_constraints(self._custom_constraints)
                 
             if hasattr(self, '_custom_objective') and self._custom_objective is not None:
                 self._builder.set_objective_rule(self._custom_objective)
@@ -1331,23 +1373,25 @@ class ReactionModel(WavelengthSelectionMixins):
         dis_method = sim_set_up_options.get('method', 'fe')
         
         # Override the chosen method to fe if dosing or steps are included
-        if self._has_step_or_dosing and self._fixed_states is None or len(self._fixed_states) == 0:
+        if self._has_step_or_dosing: #ß and self._fixed_states is None or len(self._fixed_states) == 0:
             if dis_method != 'fe':
                 print('Changing simulation method to finite element (fe)')
                 dis_method = 'fe'
 
-        elif self._fixed_states is not None and not self._has_step_or_dosing:
-            if dis_method != 'dae.collocation':
-                dis_method = 'dae.collocation'
-                print('Changing simulation method to DAE collocation (dae.collocation)')
+        # elif self._fixed_states is not None and not self._has_step_or_dosing:
+        #     if dis_method != 'dae.collocation':
+        #         dis_method = 'dae.collocation'
+        #         print('Changing simulation method to DAE collocation (dae.collocation)')
         
-        else:
-            raise ValueError('Simulation with fixed states and dosing/steps is not currently supported')
+        # else:
+        #     raise ValueError('Simulation with fixed states and dosing/steps is not currently supported')
         
         # Choose the proper simulator object
         simulation_class = PyomoSimulator
         if dis_method == 'fe':
              simulation_class = FESimulator
+             
+        print(f'{simulation_class = }')
         
         self._s_model = self._create_pyomo_model(is_simulation=True, ignore_model=True)
         
