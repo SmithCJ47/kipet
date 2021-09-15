@@ -103,6 +103,9 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         
         solver_opts = kwds.pop('solver_opts', dict())
         variances = kwds.pop('variances', dict())
+        scale_variance = kwds.pop('scale_variance', False)
+        min_variance = kwds.pop('min_variance', 1)
+        min_variance_global = kwds.pop('min_variance_global', None)
         tee = kwds.pop('tee', False)
         with_d_vars = kwds.pop('with_d_vars', False)
         covariance = kwds.pop('covariance', None)
@@ -130,8 +133,13 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         Z_in = kwds.pop('Z_in', dict())
 
         self.solver = solver
+        
+        # These should really be defined in __init__ and not here
         self.covariance_method = covariance
         self.model_variance = model_variance
+        self.min_variance = min_variance
+        self.min_variance_global = min_variance_global
+        self.scale_variance = scale_variance
         self._estimability = estimability
 
         if not self.model.alltime.get_discretization_info():
@@ -261,6 +269,24 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         model = self.model
         model.objective = Objective(expr=0)
         
+        print(f'{self.min_variance = }')
+        
+        print(f'{sigma_sq = }')
+        
+        variance_level = 'local'
+        variance_divider = self.min_variance
+        
+        if self.min_variance_global is not None:
+            variance_level = 'global'
+            variance_divider = self.min_variance_global
+        
+        if self.scale_variance:
+            print(f'# ParameterEstimator: Scaling the variances using {variance_level} variance equal to {variance_divider:.4e}')
+            sigma_sq = {k : v/variance_divider for k, v in sigma_sq.items()}
+        
+        print(f'{sigma_sq = }')
+    
+
         if self._spectra_given:
 
             all_sigma_specified = True
@@ -384,9 +410,8 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         :return: None
         
         """
-
         obj=0
-        obj += conc_objective(model, variance=sigma_sq, source=source)  
+        obj += conc_objective(model, variance=sigma_sq, source=source)
         model.objective.expr += obj
     
         return None
