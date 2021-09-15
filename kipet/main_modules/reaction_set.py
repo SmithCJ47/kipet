@@ -82,6 +82,7 @@ class ReactionSet:
         self.global_parameters = None
         self.ub = UnitBase()
         
+        self.scale_variance = False
         self.file = pathlib.Path(inspect.stack()[1].filename)
         
         t = time.localtime()
@@ -385,6 +386,7 @@ class ReactionSet:
         """
         for name, model in self.reaction_models.items():
             if not model._optimized:
+                model.min_variance = self.min_variance
                 model.run_opt()
             else:
                 print(f"Model {model.name} has already been optimized")
@@ -422,6 +424,13 @@ class ReactionSet:
         kwargs = {'kipet': True,
                   'objective_multiplier': 1,
                   }
+        
+        
+        if self.scale_variance:
+            for model in self.reaction_models.values():
+                model.settings.parameter_estimator.scale_variance = True
+                if self.global_variance:
+                    model.min_variance_global = self.min_variance
 
         if self.global_parameters is not None:
             global_parameters = self.global_parameters
@@ -495,6 +504,22 @@ class ReactionSet:
                 df_param.loc[param, reaction] = model.results.P[param]
             
         return df_param
+    
+    @property
+    def min_variance(self):
+        """Finds the lowest variance in the set of ReactionModel instances
+        to better scale the objective function
+        
+        TODO: Take into account the scale of the numerator (the concentrations)
+        
+        """
+        var = 1
+        
+        if self.scale_variance:
+            for i, model in self.reaction_models.items():
+                var = min(min([v for v in model.variances.values()]), var)
+    
+        return var
     
     def plot(self, var=None):
         """Plot method for ReactionSet

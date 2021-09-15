@@ -37,7 +37,7 @@ def define_free_parameters(models_dict, global_params=None, kind='full'):
     param_names = []
     model_count = False
     
-    print(f'In define: {global_params = }')
+    # print(f'In define: {global_params = }')
     
     methods = {'variable': 'getname',
                'simple': 'simple',
@@ -365,7 +365,7 @@ def covariance_k_aug(model_obj, solver_factory, components, parameters, ncp=1, m
     else:
         k_aug.options["compute_inv"] = ""
 
-    k_aug.solve(optimization_model, tee=True)
+    k_aug.solve(optimization_model, tee=False)
 
     stub = ip._problem_files[0][:-3]
     var_index_names, con_index_names = var_con_data(stub)
@@ -395,16 +395,16 @@ def covariance_k_aug(model_obj, solver_factory, components, parameters, ncp=1, m
                 else:
                     h = unordered_hessian[(var_loc[vi]), (var_loc[vj])]
                     hessian[i, j] = h
-        print(hessian.size, "hessian size")
+        # print(hessian.size, "hessian size")
 
-        print(hessian)
+        # print(hessian)
         covariance_matrix = hessian
         
         
     else:
         size = (len(con_index_names), len(var_index_names))
         covariance_matrix = calculate_inverse_hr(size, col_ind_dict, global_set=parameters)
-        print(covariance_matrix)
+        # print(covariance_matrix)
 
     covariance_matrix_reduced = covariance_matrix[col_ind_param_hr, :]
 
@@ -445,7 +445,7 @@ def free_variables(model, components, parameters, var_index_names):
     """
     spectral_vars = []
     
-    print(f'{parameters = }')
+    # print(f'{parameters = }')
     # parameters = ['P[k1]']
     
     if components is not None:
@@ -454,11 +454,11 @@ def free_variables(model, components, parameters, var_index_names):
                 spectral_vars += [f'{var}[{k[0]},{k[1]}]' for k in getattr(model, var) if k[1] in components]
                 
     col_ind_dict = {v: var_index_names.index(v) for v in spectral_vars + parameters}
-    print(f'{col_ind_dict = }')
+    # print(f'{col_ind_dict = }')
     
     col_ind = [var_index_names.index(v) for v in spectral_vars + parameters]
     col_ind_P = [var_index_names.index(name) for name in parameters]
-   #print(f'{var_index_names = }')
+    #print(f'{var_index_names = }')
     col_ind_param_hr = [col_ind.index(p) for p in col_ind_P]
     
     return col_ind_dict, col_ind_param_hr
@@ -488,70 +488,87 @@ def _build_raw_J_and_H(size):
     jac.irow -= 1
     jac.jcol -= 1
     
-    print(f'{jac = }')
+    grad_file = kaug_files.joinpath('gradient_f_print.txt')
+    grad = pd.read_csv(grad_file, delim_whitespace=True, header=None, skipinitialspace=True)
+    grad.columns = ['gradient']
+    # grad.columns = ['irow', 'jcol', 'vals']
+    # grad.irow -= 1
+    # grad.jcol -= 1
+    
+    # print(f'{grad = }')
     
     J = coo_matrix((jac.vals, (jac.jcol, jac.irow)), shape=(m, n))
     Hess_coo = coo_matrix((hess.vals, (hess.irow, hess.jcol)), shape=(n, n))
     H = Hess_coo + triu(Hess_coo, 1).T
     
-    return H, J
+    #grad = coo_matrix((grad.vals (grad.jcol, grad.irow)), shape=(n, 1))
+    
+    return H, J, grad
 
 def _build_reduced_hessian(size, col_ind, con_ind=None, parameter_set=[], 
                            global_set=[], delete_fixed_constraints=False):
+    
     """Constructs the reduced Hessian used in various methods.
     
     """
-    print(f'{size = }')
+    #print(f'{size = }')
     
-    H, J = _build_raw_J_and_H(size)
+    H, J, grad = _build_raw_J_and_H(size)
 
-    print(f'{J.shape = }')
-    print(f'{H.shape = }')
-    print(f'{parameter_set = }')
-    print(f'{global_set = }')
+    # print(f'{J.shape = }')
+    # print(f'{H.shape = }')
+    # print(f'{parameter_set = }')
+    # print(f'{global_set = }')
 
     
     local_set = list(set(parameter_set).difference(set(global_set)))
-    print(f'{local_set = }')
+    #print(f'{local_set = }')
 
     if delete_fixed_constraints:
         dummy_constraints = [f'fix_params_to_global[{k}]' for k in global_set]
         
         jac_row_ind = [con_ind.index(d) for d in dummy_constraints]
-        print(f'{len(con_ind) = }')
-        print(f'{len(col_ind) = }')
+        # print(f'{len(con_ind) = }')
+        # print(f'{len(col_ind) = }')
         
-        print(f'{jac_row_ind = }')
-        print(f'{col_ind = }')
+        # print(f'{jac_row_ind = }')
+        # print(f'{col_ind = }')
         
         col_ind_local = [v for k, v in col_ind.items() if k.lstrip('P[').rstrip(']') in local_set]
         col_ind_global = [v for k, v in col_ind.items() if k.lstrip('P[').rstrip(']') not in local_set]
 
-        print(f'{col_ind_local = }')
-        print(f'{col_ind_global = }')
+        # print(f'{col_ind_local = }')
+        # print(f'{col_ind_global = }')
 
         J_c = delete_from_csr(J.tocsr(), row_indices=jac_row_ind).tocsc()
         row_indexer = SparseRowIndexer(J_c.T)
         J_f = row_indexer[col_ind_global].T
-        print(f'{J_f = }')
+        # print(f'{J_f = }')
 
-        print(f'{J_c.shape = }')
-        print(f'{J_f.shape = }')
+        # print(f'{J_c.shape = }')
+        # print(f'{J_f.shape = }')
         
         J_l = delete_from_csr(J_c.tocsr(), col_indices=col_ind_local + col_ind_global)
-        print(f'{J_l.shape = }')
+        # print(f'{J_l.shape = }')
     
     else:
-        print(f'{col_ind = }')
+        # print(f'{col_ind = }')
         J_c = J.tocsc()
         row_indexer = SparseRowIndexer(J_c.T)
         J_f = row_indexer[[v for v in col_ind.values()]].T
         J_l = delete_from_csr(J_c.tocsr(), col_indices=col_ind.values())
+        
+    #col_ind_global = [300, 301]
+    grad = grad.loc[col_ind_global].values
+    # print(f'{grad = }')
     
     n_free = len(global_set)
     reduced_hessian, Z_mat = _reduced_hessian_matrix(J_f, J_l, H, col_ind, n_free)
 
-    return reduced_hessian
+    # if not gradients:
+    #     return reduced_hessian
+    # else:
+    return reduced_hessian, grad
 
 def _reduced_hessian_matrix(F, L, H, col_ind, n_free):
     """This calculates the reduced hessian by calculating the null-space based
@@ -572,25 +589,25 @@ def _reduced_hessian_matrix(F, L, H, col_ind, n_free):
     #n_free = n - F.shape[0]
     #n_free = len(col_ind)
     col_ind_vals = [v for v in col_ind.values()]
-    print(f'{col_ind = }')
+    # print(f'{col_ind = }')
     
-    print(f'{n = }')
-    print(f'{n_free = }')
-    print(f'{F = }')
-    print(f'{L = }')
+    # print(f'{n = }')
+    # print(f'{n_free = }')
+    # print(f'{F = }')
+    # print(f'{L = }')
     X = spsolve(L.tocsc(), -F.tocsc())
 
-    print(f'{X.shape = }')
-    print(f'{X = }')
+    # print(f'{X.shape = }')
+    # print(f'{X = }')
     
 
     col_ind_left = list(set(range(n)).difference(set(col_ind_vals)))
     col_ind_left.sort()
     
-    print(f'{len(col_ind_left) = }')
+    # print(f'{len(col_ind_left) = }')
     
     Z = np.zeros([n, n_free])
-    print(f'{Z.shape = }')
+    # print(f'{Z.shape = }')
     Z[col_ind_vals, :] = np.eye(n_free)
 
     if isinstance(X, csc_matrix):
@@ -598,7 +615,7 @@ def _reduced_hessian_matrix(F, L, H, col_ind, n_free):
     else:
         Z[col_ind_left, :] = X.reshape(-1, 1)
 
-    print(f'{Z = }')
+    # print(f'{Z = }')
 
     Z_mat = coo_matrix(np.mat(Z)).tocsr()
     Z_mat_T = coo_matrix(np.mat(Z).T).tocsr()
@@ -670,21 +687,21 @@ def update_warm_start(model):
 def calculate_reduced_hessian(model, d=None, optimize=False, parameter_set=[],
                               fix_method=None, rho=10, scaled=True, 
                               stub=None, return_duals=False,
-                              global_set=None):
+                              global_set=None, gradients=True):
     
-    print('IN CRH')
-    print(f'{global_set = }')
-    print(f'{parameter_set = }')
+    # print('IN CRH')
+    # print(f'{global_set = }')
+    # print(f'{parameter_set = }')
     #parameter_set = ['k1', 'k2']
     #global_set = ['k1']
     
     if global_set is None:
         global_set = parameter_set
-    print(f'{global_set = }')
+    # print(f'{global_set = }')
     
     _stub = stub
     if optimize or not optimize and stub is None:
-        print('# Rreduced Hessian Method: Optimizing the model')
+        #print('# Rreduced Hessian Method: Optimizing the model')
         _stub = optimize_model(model, 
                               parameter_set=parameter_set, 
                               d=d,
@@ -693,18 +710,18 @@ def calculate_reduced_hessian(model, d=None, optimize=False, parameter_set=[],
                               scaled=scaled,
                               global_parameters=global_set)
     
-    print(f'{_stub = }')
+    # print(f'{_stub = }')
     
     parameter_set_full = define_free_parameters(model, global_params=global_set, kind='full')
     var_index_names, con_index_names = var_con_data(_stub)
     size = (len(con_index_names), len(var_index_names))
-    print(f'{size =}')
-    print(f'{parameter_set_full = }')
+    # print(f'{size =}')
+    # print(f'{parameter_set_full = }')
     col_ind_dict, col_ind_param_hr = free_variables(model, None, parameter_set_full, var_index_names)
     
     col_ind = list(col_ind_dict.values())
     
-    print(f'{col_ind = }')
+    # print(f'{col_ind = }')
     
     duals = []
     if return_duals:
@@ -712,12 +729,16 @@ def calculate_reduced_hessian(model, d=None, optimize=False, parameter_set=[],
         #return duals
     
     delete_fixed_constraints = fix_method == 'global'
-    reduced_hessian = _build_reduced_hessian(size, col_ind_dict, con_index_names, parameter_set, global_set, delete_fixed_constraints)
+    # if not gradients:
+    #     reduced_hessian = _build_reduced_hessian(size, col_ind_dict, con_index_names, parameter_set, global_set, delete_fixed_constraints)
+    #     grad = None
+    # else:
+    reduced_hessian, grad = _build_reduced_hessian(size, col_ind_dict, con_index_names, parameter_set, global_set, delete_fixed_constraints)
     
     if stub is not None:
         return reduced_hessian
     else:
-        return reduced_hessian, _stub, duals
+        return reduced_hessian, _stub, duals, grad
 
 def optimize_model(model, parameter_set=[], d=None, verbose=False, fix_method='fixed',
                     use_bounds=False, variable_name='P', rho=10, scaled=True,
@@ -731,20 +752,21 @@ def optimize_model(model, parameter_set=[], d=None, verbose=False, fix_method='f
     """
     from kipet.estimability_tools.parameter_handling import set_scaled_parameter_bounds
     
-    if verbose:
-        print(f'd: {d}')
+    # if verbose:
+    #     print(f'd: {d}')
 
     ipopt = SolverFactory('ipopt')
+    ipopt.options['linear_solver'] = 'ma57'
     _tmpfile = 'reduced_hessian'
     
     
     #local_parameters = set(parameter_set).difference(global_parameters)
     
-    print(f'{global_parameters= }')
-    print(f'{parameter_set = }')
+    # print(f'{global_parameters= }')
+    # print(f'{parameter_set = }')
     
-    print('THE OPT IS start')
-    print(model.P.display())
+    # print('THE OPT IS start')
+    # print(model.P.display())
     # print(f'{local_parameters = }')
     
     if fix_method == 'global':
@@ -784,22 +806,27 @@ def optimize_model(model, parameter_set=[], d=None, verbose=False, fix_method='f
     for key, param in model.P.items():
         if key not in parameter_set:
             param.unfix()
+            
+    #print(type(ipopt))
+    #ipopt.config.stream_solver = False
     
     ipopt.solve(model,
                 symbolic_solver_labels=True,
                 keepfiles=True,
-                tee=True,
+                tee=False,
                 logfile=_tmpfile,
+                #log_level=1,
+                #stream_solver=False,
                 )
 
-    print('THE OPT IS FIN')
-    print(model.P.display())
+    # print('THE OPT IS FIN')
+    # print(model.P.display())
 
     stub = ipopt._problem_files[0][:-3]
 
     kaug = SolverFactory('k_aug')
     kaug.options["print_kkt"] = ""
-    kaug.solve(model, tee=True)
+    kaug.solve(model, tee=False)
 
     return stub
 
@@ -819,8 +846,8 @@ def add_global_constraints(model, parameter_set, variable_name):
     
     # if parameter_set is None:
     #parameter_set = ['k1'] #[p for p in getattr(model, variable_name)]
-    print('Adding the constraints')
-    print(f'{parameter_set = }')
+    # print('Adding the constraints')
+    # print(f'{parameter_set = }')
 
     # if self.scaled:
     #     global_param_init = {p: 1 for p in parameter_set}

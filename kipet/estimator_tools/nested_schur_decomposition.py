@@ -24,6 +24,7 @@ import os
 import platform
 
 # Third party imports
+import cyipopt
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -90,7 +91,7 @@ class NSD:
         print(f'{self.parameter_global = }')
         self.d_init = {p: v for p, v in avg_param.items() if p in global_parameters}
         self.d_init_unscaled = None
-        self.d_iter = []
+        self.d_iter = []# {v.name : [] for v in self.reaction_models.values()}
         self.parallel = parallel
         
         if init is not None:
@@ -101,16 +102,16 @@ class NSD:
         print(self.d_init)
         
         self.x = [0 for k, v in self.d_init.items()]
-        self.d = [0 for i in range(len(self.reaction_models))]
+        self.d = {k : 0 for k in self.reaction_models}
         self.M = pd.DataFrame(np.zeros((len(self.parameter_global), len(self.parameter_global))), index=self.parameter_global, columns=self.parameter_global)
         self.m = pd.DataFrame(np.zeros((len(self.parameter_global), 1)), index=self.parameter_global, columns=['dual'])
         self.duals = [0 for i in range(len(self.reaction_models))]
+        self.grad = [0 for i in range(len(self.reaction_models))]
         self.rh = [0 for i in range(len(self.reaction_models))]
         self.obj = [0 for i in range(len(self.reaction_models))]
         self.stub = [None for v in self.reaction_models.values()]
         self.final_param = {}
         
-       
         print(f'{self.x = }')
         if self.parallel:
             if platform.system() == 'Darwin':
@@ -148,10 +149,10 @@ class NSD:
         if self.strategy == 'ipopt':
             results = self.ipopt_method()
         
-        elif self.strategy == 'trust-region':
+        elif self.strategy in ['trust-region', 'tr']:
             results = self.trust_region()
             
-        elif self.strategy == 'newton-step':
+        elif self.strategy in ['newton-step', 'ns']:
             results = self.run_simple_newton_step(alpha=0.15, iterations=80) 
         else:
             pass
@@ -226,11 +227,11 @@ class NSD:
         
         """Yet another wrapper for the objective function"""
         
-        print(f'{self.parameter_global = }')
+        # print(f'{self.parameter_global = }')
         objective_value = 0
         
         if self.parallel:
-            objective_value = self.solve_mp('objective', [x, self.parameter_names, {}])
+            objective_value = self.solve_mp('objective', [x, [k for k in self.reaction_models.keys()]])
         else:
             for i, model in enumerate(self.model_list):
                 objective_value += self.solve_element('obj', model, x, i, True)
@@ -252,7 +253,17 @@ class NSD:
 
         self.m = m
         
-    
+    def _update_grad_impl(self, x, optimize=False):
+        
+        grad = pd.DataFrame(np.zeros((len(self.parameter_global), 1)), index=self.parameter_global, columns=['grad'])
+        for i, model in enumerate(self.model_list):
+            grad_i = self.solve_element('grad', model, x, i, optimize)
+            for param in grad.index:
+                if param in grad_i.keys():
+                    grad.loc[param] = grad.loc[param] + grad_i[param]
+
+        self.grad = grad
+        
     def _update_M_impl(self, x, optimize=False):
         
         M = pd.DataFrame(np.zeros((len(self.parameter_global), len(self.parameter_global))), index=self.parameter_global, columns=self.parameter_global)
@@ -261,8 +272,8 @@ class NSD:
             M = M.add(reduced_hessian).combine_first(M)
             M = M[self.parameter_global]
             M = M.reindex(self.parameter_global)
-            print(f'This is M for {i}')
-            print(M)
+            # print(f'This is M for {i}')
+            # print(M)
                 
         self.M = M
     
@@ -280,27 +291,28 @@ class NSD:
             objective_value (float): sum of sub-problem objectives
             
         """
-        if DEBUG:
-            stuck = '*'*50
-            print(stuck)
-            print('\nCalculating objective')
+        # if DEBUG:
+        #     stuck = '*'*50
+        #     print(stuck)
+        #print_debug('\nCalculating objective')
         
-        print('# Objective Function:')
-        print(f'# {x = }')
-        print(f'# {self.x = }')
+        #print_debug('# Objective Function:')
+        #print(f'{x = }')
+        #print(f'{self.x = }')
         
         if not np.array_equal(x, self.x):
-            print('# The values do not match, updating objective function')
+            #print('# The values do not match, updating objective function')
             self._update_x_impl(x)
-        else:
-            print('# The values match, no optimization of the model')
+        #else:
+            #print('# The values match, no optimization of the model')
         
         #for i, p in enumerate(parameter_names):
         #    print(f'{p} = {x[i]:0.12f}')
                 
-        if DEBUG:
-            print(f'Obj: {self.objective}')
-            print(stuck)
+        # if DEBUG:
+        #     print(f'Obj: {self.objective}')
+        #     print(stuck)
+        # print(type(self.objective))
             
         return self.objective
 
@@ -320,25 +332,25 @@ class NSD:
             m (np.array): vector of duals
             
         """
-        if DEBUG:
-            stuck = '*'*50
-            print(stuck)
-            print('\nCalculating m')
+        # if DEBUG:
+        #     stuck = '*'*50
+        #     print(stuck)
+        #     print('\nCalculating m')
             
         optimize = False
         if not np.array_equal(x, self.x):
-            print('# The values do not match, updating objective function')
+            # print('# The values do not match, updating objective function')
             optimize = True
-        else:
-            print('# The values match, no optimization of the model')
+        # else:
+            # print('# The values match, no optimization of the model')
             
         self._update_m_impl(x, optimize=optimize)
 
         m = self.m.values.flatten()
         
-        if DEBUG:
-            print(f'{m = }')
-            print(stuck)
+        # if DEBUG:
+        # print(f'{m = }')
+        #     print(stuck)
         
         return m
     
@@ -356,35 +368,34 @@ class NSD:
             
             M (np.array): sum of reduced Hessians
         """
-        if DEBUG:
-            stuck = '*'*50
-            print(stuck)
-            print('\nCalculating M')
+        # if DEBUG:
+        #     stuck = '*'*50
+        #     print(stuck)
+        #     print('\nCalculating M')
             
         optimize = False
         if not np.array_equal(x, self.x):
-            print('# The values do not match, updating objective function')
+            # print('# The values do not match, updating objective function')
             optimize = True
-        else:
-            print('# The values match, no optimization of the model')
+        # else:
+            # print('# The values match, no optimization of the model')
             
         self._update_M_impl(x, optimize=optimize)
     
         
-        print(type(self.M.values))
+        # print(type(self.M.values))
         M = self.M.values# + np.eye(M_size)*0.1
         
-        if DEBUG:
-            print(f'M: {M}')
-            print(f'Det:  {np.linalg.det(M):0.4f}')
-            print(f'Rank: {np.linalg.matrix_rank(M)}')
-            print(f'EigVals: {np.linalg.eigh(M)[0]}')
-            print(stuck)
+        # if DEBUG:
+        # print(f'M: {M}')
+        # print(f'Det:  {np.linalg.det(M):0.4f}')
+        # print(f'Rank: {np.linalg.matrix_rank(M)}')
+        # print(f'EigVals: {np.linalg.eigh(M)[0]}')
+        #     print(stuck)
         
         return M
     
-    @staticmethod
-    def calculate_grad(x, scenarios, parameter_names):
+    def calculate_grad(self, x, *args):
         """Calculate the average of the gradients for the NSD
         
         Args:
@@ -398,7 +409,19 @@ class NSD:
             
             M (np.array): sum of reduced Hessians
         """
-        return np.zeros((len(x), 1))
+        # This is never called
+        print("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&")
+        optimize = False
+        if not np.array_equal(x, self.x):
+            print('# The values do not match, updating objective function')
+            optimize = True
+        else:
+            print('# The values match, no optimization of the model')
+            
+        self._update_grad_impl(x, optimize=optimize)
+        print('{self.grad = }')
+        
+        return self.grad
     
     
     def parameter_initialization(self):
@@ -486,10 +509,10 @@ class NSD:
                                     callback=self.callback)
         
         bounds = self._generate_bounds_object()
-        print(bounds)
+        #print(bounds)
         
-        import ipopt as cyipopt
-        nlp = cyipopt.problem(n = len(d_vals),
+        print("This is the start of the optimization")
+        nlp = cyipopt.Problem(n = len(d_vals),
                               m = 0,
                               problem_obj = problem_object,
                               lb = bounds.lb,
@@ -498,22 +521,30 @@ class NSD:
                               cu = [],
                               )
     
-        options = {'tol': 1e-8, 
+        options = {#'tol': 3e-1,
+                   #'acceptable_tol' : 1e-4,
                  #  'bound_relax_factor': 1.0e-8, 
                    'max_iter': 100,
-                   'print_user_options': 'yes', 
+                   #'print_user_options': 'yes', 
                    'nlp_scaling_method': 'none',
+                   'print_level': 5,
                    #'corrector_type': 'primal-dual',
                    #'alpha_for_y': 'full',
                #    'accept_every_trial_step': 'yes',
-                  # 'linear_solver': 'ma57'
+                  # 'linear_solver': 'ma57',
                    }
+        nlp.add_option('mu_strategy', 'adaptive')
+        #nlp.add_option('linear_solver', 'ma57')
+        #nlp.add_option('tol', 1e-7)
+
 
         if options: 
             for key, value in options.items():
-                nlp.addOption(key, value)
+                nlp.add_option(key, value)
         
+        print('Some reason this is starting here')
         x, results = nlp.solve(d_vals)
+        print('This is not working beyond this point')
         
         # Prepare parameter results
         # print(d_init_unscaled)
@@ -524,11 +555,13 @@ class NSD:
         
         # self.parameters_opt = {k: results['x'][i]*s_factor[k] for i, k in enumerate(self.d_init.keys())}
         
-        self.parameter_scaling_conversion(results['x'])
+        #self.parameter_scaling_conversion(results['x'])
         
-        for name, model in self.reaction_models.items():
-            for param, model_param in model.model.P.items():
-                model_param.value = self.parameters_opt[param]
+        self.d_iter.append(x)
+        
+        # for name, model in self.reaction_models.items():
+        #     for param, model_param in model.p_model.P.items():
+        #         model_param.value = self.parameters_opt[param]
     
         results_kipet = self.get_results()
         return results_kipet
@@ -553,10 +586,12 @@ class NSD:
             raise ValueError('The chosen Trust Region method is not valid')
 
         tr_options={
-            'xtol': 1e-4,
+            'xtol': 1e-6,
+            'verbose': 3,
             }
     
         print('# Starting Trust-Region algorithm')
+        
         results = minimize(
             self.objective_function, 
             d_vals,
@@ -569,7 +604,10 @@ class NSD:
             options=tr_options,
         )
             
+        self.opt_results = results
+        
         print('# Finished with Trust-Region algorithm')
+        print(f'# Status: {results.status}')
         # End internal methods
         self.parameter_scaling_conversion(results.x)
         results_kipet = self.get_results()
@@ -636,9 +674,14 @@ class NSD:
         results_kipet = self.get_results()
         return results_kipet
     
-    def callback(self, x, *args):
+    def callback(self, x, opt_obj):
         """Method to record the parameters in each iteration"""
-        #if not [x] in self.d_iter:
+       
+        # if divmod(opt_obj.nit - 1, 10)[1] == 0:
+        #     print('iter     Obj.    ')
+        # print(f'{str(opt_obj.nit).rjust(4)}', end='  ')   
+        # print(f'{opt_obj.fun:0.8f}'.rjust(10))
+            
         self.d_iter.append(x)
         
     
@@ -697,9 +740,9 @@ class NSD:
         :return: None
         
         """
-        print(f'{self.parameter_global = }')
+        #print(f'{self.parameter_global = }')
         
-        rh, stub, duals = calculate_reduced_hessian(
+        rh, stub, duals, grad = calculate_reduced_hessian(
             model, 
             d=x, 
             optimize=True,
@@ -712,6 +755,7 @@ class NSD:
             global_set=self.parameter_global)
         
         self.rh[file_number] = rh
+        self.grad[file_number] = grad
         self.stub[file_number] = stub
         self.duals[file_number] = duals
         self.obj[file_number] = model.objective.expr()
@@ -722,23 +766,23 @@ class NSD:
         if optimize:
             self.general_update(model, x, number)
         values = getattr(self, element)[number]
-        print(f'{element} = {values}')
+        #print(f'{element} = {values}')
         
         return values
     
     
-    def solve_model_objective_mp(self, model, x, parameter_names, file_number, kwargs={}):
+    def solve_model_objective_mp(self, model, x, file_number):
         """Wrapper for obtaining the objective function value
         
         """
-        rh, stub, duals, param_values = self.general_update_mp(model, x, file_number)
+        rh, stub, duals, grad, param_values = self.general_update_mp(model, x, file_number)
         
-        return model.objective.expr(), rh, stub, duals, param_values
+        return model.objective.expr(), rh, stub, duals, grad, param_values
     
     
     def general_update_mp(self, model, x, file_number):
         
-        rh, stub, duals = calculate_reduced_hessian(
+        rh, stub, duals, grad = calculate_reduced_hessian(
             model, 
             d=x, 
             optimize=True,
@@ -752,119 +796,54 @@ class NSD:
         
         param_values = {k: v.value for k, v in model.P.items()}
         
-        return rh, stub, duals, param_values
-    
-    
-    # def m_func(self, q, i, args):
-    #     """This takes the input and passes it to the target function
-        
-    #     """
-    #     print('# Starting Multiprocessing Procedure')
-    #     print(f'# Process ID: {os.getpid()}')
-        
-    #     x = args[0]
-    #     parameter_names = args[1]
-    #     kwargs = args[2]
-        
-    #     model_to_solve = self.model_list[i - 1]
-        
-    #     data = self.solve_element('duals', model_to_solve, x, parameter_names, i, kwargs)
-    #     q.put(data)
-        
-    #     print('# Finished Multiprocessing Procedure')
-    
-    
-    # def M_func(self, q, i, args):
-    #     """This takes the input and passes it to the target function
-        
-    #     """
-    #     print('# Starting Multiprocessing Procedure')
-    #     print(f'# Process ID: {os.getpid()}')
-        
-    #     x = args[0]
-    #     parameter_names = args[1]
-    #     kwargs = args[2]
-        
-    #     model_to_solve = self.model_list[i - 1]
-        
-    #     data = self.solve_element('rh', model_to_solve, x, parameter_names, i, kwargs)
-    #     q.put(data)
-        
-    #     print('# Finished Multiprocessing Procedure')
+        return rh, stub, duals, grad, param_values
 
 
     def obj_func(self, q, i, args):
         """This takes the input and passes it to the target function
         
         """
-        print('# Starting Multiprocessing Procedure')
-        print(f'# Process ID: {os.getpid()}')
+        #print('# Starting Multiprocessing Procedure')
+        #print(f'# Process ID: {os.getpid()}')
         
-        x = args[0]
-        parameter_names = args[1]
-        kwargs = args[2]
-        
-        model_to_solve = self.model_list[i - 1]
-        
-        data = self.solve_model_objective_mp(model_to_solve, x, parameter_names, i, kwargs)
+        # x = args[0]
+        # model_to_solve = 
+        data = self.solve_model_objective_mp(self.model_list[i - 1], args[0], i)
         q.put(data)
         
-        print('# Finished Multiprocessing Procedure')
+        #print('# Finished Multiprocessing Procedure')
 
     
     def solve_mp(self, func, args):
 
-        # if func == 'objective':
         mp = Multiprocess(self.obj_func)
-        data = mp(args, num_processes = min(len(self.model_list), cpu_count()))
+        data = mp([args[0]], num_processes = min(len(self.model_list), cpu_count()))
         obj = 0 
- 
+        model_names = args[1]
+    
         for i, d in enumerate(data.values()):    
             obj += d[0]
             self.rh[i] = d[1]
             self.stub[i] = d[2]
             self.duals[i] = d[3]
-            self.d[i] = d[4]
+            self.grad[i] = d[4]
+            self.d[model_names[i]] = d[5]
         
         return obj
-            
-        # elif func == 'M':
-        #     mp = Multiprocess(self.M_func)
-        #     data = mp(args, num_processes = min(len(self.reaction_models), cpu_count()))
-            
-        #     return data
-            
-            
-        # elif func == 'm':
-        #     mp = Multiprocess(self.m_func)
-        #     data = mp(args, num_processes = min(len(self.reaction_models), cpu_count()))
-            
-        #     results = {}
-            
-        #     for key, value in data.items():
-        #         for k, v in value.items():
-        #             if k not in results:
-        #                 results[k] = v
-        #             else:
-        #                 results[k] += v
-                    
-        #     return results
-            
-        # else:
-        #     raise ValueError('You have made a big coding mistake')
-            
-        #     return None
-        
+
         
     def func_simulation(self, q, i):
         print('starting')
         print('process_id', os.getpid())
         
+        model_names = [k for k in self.reaction_models.keys()]
         model_to_solve = list(self.reaction_models.values())[i - 1]
-        model_to_solve.parameters.update('value', self.d[i - 1])
+        model_to_solve.parameters.update('value', self.d[model_names[i - 1]])
         # for param, p_obj in model_to_solve._P.items():
         #     if param in self.d[i-1]:
         #         p_obj.set_value(self.d[i-1][param])
+        
+        #print(model_to_solve.parameters)
         
         data = self.solve_simulation(model_to_solve)
         q.put(data)
@@ -877,7 +856,7 @@ class NSD:
         # Add mp here
     
         """
-        model.simulate(self.final_param)
+        model.simulate(self.d[model.name])
         print('Model has been simulated')
 
         attr_list = ['name', 'results_dict']
@@ -940,6 +919,7 @@ class Optproblem(object):
         self.hess = hessian
         self.jac = jacobian
         self.kwargs = kwargs
+        self.callback = callback
 
     def objective(self, x):
         
@@ -985,6 +965,17 @@ class Optproblem(object):
         
         return H[hs.row, hs.col]
 
+    def intermediate(self, alg_mod, iter_count, obj_value, inf_pr, inf_du, mu,
+                     d_norm, regularization_size, alpha_du, alpha_pr,
+                     ls_trials):
+        
+        pass
+        #print('Iter.\tObj.')
+        #print(f'{iter_count}:\t{obj_value}')
+        
+        # if callable(self.callback):
+        #     self.callable(x, )
+
 
 def calculate_parameter_averages(model_dict):
     
@@ -1008,6 +999,11 @@ def calculate_parameter_averages(model_dict):
     avg_param = {param: [p_dict[param]/c_dict[param], lb[param], ub[param]] for param in p_dict.keys()}
     
     return avg_param
+
+def print_debug(value):
+    
+    if DEBUG:
+        print(f'{value = }')
 
 if __name__ == '__main__':
    
