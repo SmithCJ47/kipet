@@ -64,8 +64,44 @@ class ParameterReplacer:
                     if hasattr(model, 'parameter_names'):
                         model.parameter_names.remove(param)
                     del p_var[param]
-        
+                    
         return None
+                    
+    # def replace_with_log_vars(self):
+    #     """Method to replace the parameters with log10 versions. This replaces the variables in place.
+
+    #     :return: None
+    #     """
+    #     for model in self.models:
+    
+    #         # Change to use the direct models
+    #         p_var = getattr(model, self.parameter_name)
+    
+    #         # Check which parameters are fixed and add them to the set:
+    #         params_to_fix = set([k for k, v in p_var.items() if v.fixed])
+
+    #         # Replace the parameters with numeric values and remove Var from model
+    #         for param in params_to_fix:   
+                
+    #             parameter_to_change = param
+    #             if parameter_to_change in p_var.keys():
+                    
+    #                 change_value = 10**p_var[param]
+                
+    #                 for expression_var in self.expression_names:
+    #                     e_var = getattr(model, expression_var)
+                        
+    #                     print(e_var)
+        
+    #                     for k, v in e_var.items(): 
+    #                         ep_updated_expr = _update_expression(v.body, p_var[param], change_value)
+    #                         e_var[k] = ep_updated_expr == 0
+                
+    #                 # if hasattr(model, 'parameter_names'):
+    #                 #     model.parameter_names.remove(param)
+    #                 # del p_var[param]
+        
+    #     return None
 
 
 def _update_expression(expr, replacement_param, change_value):
