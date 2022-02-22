@@ -6,6 +6,7 @@ The read_data and write_data methods are accessible at the top level (i.e. kipet
 """
 # Standard library imports
 import os
+import contextlib
 import pathlib
 import re
 import sys
@@ -243,3 +244,33 @@ def add_noise_to_data(data, noise):
     noised_data = add_noise_to_signal(data, noise)
 
     return noised_data
+
+
+def _print_margin_text_set_up(text, length):
+    
+    margin, fix = divmod(length - len(text) - 2, 2)
+    statement = '#' + margin * ' ' + text + (margin + fix) * ' ' + '#'
+    return statement
+
+def print_margin(phrase, sub_phrase=None, total_length=80):
+    
+    print('#' * total_length)
+    statement = _print_margin_text_set_up(phrase, total_length)
+    print(statement)
+    
+    if sub_phrase is not None:
+        sub_statement = _print_margin_text_set_up(sub_phrase, total_length)
+        print(sub_statement)
+        
+    print('#' * total_length)
+    print()
+    
+    return None
+
+
+def supress_stdout(func):
+    def wrapper(*a, **ka):
+        with open(os.devnull, 'w') as devnull:
+            with contextlib.redirect_stdout(devnull):
+                func(*a, **ka)
+    return wrapper
