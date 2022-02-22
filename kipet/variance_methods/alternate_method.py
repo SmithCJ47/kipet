@@ -10,7 +10,8 @@ from pyomo.environ import Objective, Param, SolverFactory
 
 # KIPET library imports
 from kipet.estimator_tools.results_object import ResultsObject
-
+from kipet.general_settings.settings import solver_path
+        
 
 def run_alternate_method(var_est_object, solver, run_opt_kwargs):
     """Calls the alternative method - Short et al 2020
@@ -37,7 +38,6 @@ def run_alternate_method(var_est_object, solver, run_opt_kwargs):
 
     # Solver is fixed to ipopt
     solver = 'ipopt'
-
     nu_squared = var_est_object.solve_max_device_variance(
                                            solver,
                                            tee=tee,
@@ -219,11 +219,18 @@ def run_direct_sigmas_method(var_est_object, solver, run_opt_kwargs, fixed=False
                 iteration_counter.append(count)
                 
             results_sigmas_dict[count]['delta'] = delta
-            results_sigmas_dict[count]['simgas'] = sigma_vals
+            results_sigmas_dict[count]['sigmas'] = sigma_vals
             #results_sigmas_dict[count]['results'] = results
                 
             delta = delta + dist
             count += 1 
+            
+        # count = max(results_sigmas_dict.keys())
+        # results = ResultsObject()
+        # results.load_from_pyomo_model(var_est_object.model)
+        # results.sigma_sq = results_sigmas_dict[count]['sigmas']
+        # results.sigma_sq['device'] = results_sigmas_dict[count]['delta']
+            
             
         return results_sigmas_dict
 
@@ -307,7 +314,7 @@ def _solve_delta_given_sigma(var_est_object, solver, **kwds):
     obj += (nwp)*log((inlog)+1e-12)     
     var_est_object.model.init_objective = Objective(expr=obj)
     
-    opt = SolverFactory(solver)
+    opt = SolverFactory(solver_path(solver))
 
     for key, val in solver_opts.items():
         opt.options[key]=val
@@ -404,7 +411,7 @@ def _solve_sigma_given_delta(var_est_object, solver, **kwds):
     
     var_est_object.model.init_objective = Objective(expr=obj)
 
-    opt = SolverFactory(solver)
+    opt = SolverFactory(solver_path(solver))
 
     for key, val in solver_opts.items():
         opt.options[key]=val
