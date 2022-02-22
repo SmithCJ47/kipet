@@ -51,9 +51,13 @@ class Report:
     
     """ This class contains the methods used to prepre model data for inclusion in the HTML report"""
     
-    def __init__(self, model_list):
+    def __init__(self, model_list, is_simulation=False):
         
         self.reactions = model_list # ReactionModels
+        
+        # define the results object here
+        
+        self.simulation = is_simulation
 
     @staticmethod
     def model_context(reaction_model):
@@ -121,8 +125,7 @@ class Report:
             
         return comps
     
-    @staticmethod
-    def parameter_context(reaction_model):
+    def parameter_context(self, reaction_model):
         """Prepares a dictionary of parameter model attributes
         
         :param ReactionModel reaction_model: A solved/simulated ReactionModel instance
@@ -133,7 +136,7 @@ class Report:
         """
         params = []
 
-        if reaction_model.models['p_model']:
+        if not self.simulation:
             results_obj = reaction_model.results
         else:
             results_obj = reaction_model.results_dict['simulator']
@@ -147,6 +150,7 @@ class Report:
             param_data['lb'] = param.bounds[0]
             param_data['ub'] = param.bounds[1]
             param_data['description'] = 'Not provided' if param.description is None else param.description
+            param_data['fixed'] = param.fixed
             params.append(param_data)
             
             if hasattr(reaction_model, 'p_model'):
@@ -159,9 +163,14 @@ class Report:
                 param_data['name'] = indx
                 param_data['units'] = reaction_model.unit_base.time
                 param_data['value'] = param.loc[0]
-                param_data['initial'] = reaction_model._s_model.time_step_change[indx].value
-                param_data['lb'] = reaction_model._s_model.time_step_change[indx].bounds[0]
-                param_data['ub'] = reaction_model._s_model.time_step_change[indx].bounds[1]
+                if hasattr(reaction_model, 's_model') and reaction_model.s_model is not None:
+                    param_data['initial'] = reaction_model.s_model.time_step_change[indx].value
+                    param_data['lb'] = reaction_model.s_model.time_step_change[indx].bounds[0]
+                    param_data['ub'] = reaction_model.s_model.time_step_change[indx].bounds[1]
+                else:
+                    param_data['initial'] = reaction_model.p_model.time_step_change[indx].value
+                    param_data['lb'] = reaction_model.p_model.time_step_change[indx].bounds[0]
+                    param_data['ub'] = reaction_model.p_model.time_step_change[indx].bounds[1]
                 param_data['description'] = 'Binary variable'
                 
                 if hasattr(reaction_model, 'p_model'):
@@ -284,7 +293,10 @@ class Report:
         file = Path(abs_name)
         file_dir = file.parents[0].stem
         new_path = Path('charts').joinpath(file_dir, file.name)
-        return new_path
+        
+        return new_path.parent.joinpath(new_path.stem)
+        
+        # return new_path
     
     def create_zip_file(self, save_dir, charts_dir):
         """This generates a ZIP object to hold the report and charts
@@ -392,12 +404,14 @@ class Report:
             spectral_info = None
             spectra_file = None
             
-            print(f'{model_dict[name]["chart_C_files"]= }')
+            #print(f'{model_dict[name]["chart_U_files"] = }')
+            #print(f'{model_dict[name]["chart_Y_files"] = }')
+            
             
             if reaction_model.spectra is not None:
                 spectra_file = reaction_model.spectra.file if reaction_model.spectra.file is not None else 'Not provided or custom'
                 data_chart_files = reaction_model._plot_object._plot_input_D_data()
-                data_chart_files = f'{data_chart_files}{suffix}'
+                data_chart_files = f'{data_chart_files}'#'{suffix}'
                 
                 sd = reaction_model.spectra
                 spectral_info = []
@@ -432,7 +446,7 @@ class Report:
             model_dict[name]['variances'] = reaction_model.variances
 
 
-            if reaction_model.models['p_model']:
+            if not self.simulation:
                 results_obj = reaction_model.results
             else:
                 results_obj = reaction_model.results_dict['simulator']
@@ -524,16 +538,17 @@ class Report:
                 
             res_chart_files = None
             par_chart_files = None
+            
             if reaction_model._builder._concentration_data is not None:
                 res_chart_files = reaction_model._plot_object._plot_Z_residuals()
                 par_chart_files = reaction_model._plot_object._plot_Z_parity()
                 
-            if reaction_model._builder._spectral_data is not None:
+            if reaction_model._builder._spectral_data is not None and not self.simulation:
                 res_chart_files = reaction_model._plot_object._plot_D_residuals()
                 par_chart_files = reaction_model._plot_object._plot_D_parity()
                 
-            model_dict[name]['res_chart'] = f'{res_chart_files}{suffix}'
-            model_dict[name]['par_chart'] = f'{par_chart_files}{suffix}'
+            model_dict[name]['res_chart'] = f'{res_chart_files}'#'{suffix}'
+            model_dict[name]['par_chart'] = f'{par_chart_files}'#'{suffix}'
             
             feeds = None
             dosing_dict = reaction_model._dosing_points
