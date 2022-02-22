@@ -41,10 +41,16 @@ class VariableNames(object):
         
         self.time_step_change = 'time_step_change'
         self.step_variable = 'step'
+        self.step_function = 'stepconstraint'
         # Debug options
         
         self.model_constant = 'Const'
         self.concentration_init = 'Pinit'
+        self.concentration_init_con = 'Pinit_conditions_c'
+        self.concentration_dummy_init = 'init_conditions'
+        self.custom_constraints = 'custom_consts'
+        
+        self.beer_lambert_vars = 'bl_param'
         
         self.DEBUG = False
         
@@ -57,7 +63,23 @@ class VariableNames(object):
         
         model_vars = [self.model_parameter,
                       self.time_step_change,
-                      self.concentration_init
+                      self.concentration_init,
+                      ]
+        
+        return model_vars
+    
+    @property
+    def optimization_variables_spectral(self):
+        """These are the independent variables that need to be fixed in 
+        simulations
+        """
+        
+        model_vars = [self.model_parameter,
+                      self.time_step_change,
+                      self.concentration_init,
+                      self.concentration_spectra,
+                      self.spectra_species,
+                      self.beer_lambert_vars,
                       ]
         
         return model_vars
@@ -124,6 +146,11 @@ class VariableNames(object):
                       self.algebraic,
                       self.step_variable,
                       self.model_constant,
+                      self.time_step_change,
+                      self.concentration_init,
+                      self.step_function,
+                      self.dosing_variable,
+                      self.concentration_dummy_init,
                       ]
         
         return model_vars
