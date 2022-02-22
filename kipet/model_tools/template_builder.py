@@ -4,6 +4,7 @@
 import inspect
 import itertools
 import logging
+import time
 import warnings
 
 # Third party imports
@@ -13,6 +14,7 @@ import six
 from pyomo.dae import ContinuousSet, DerivativeVar
 from pyomo.environ import (ConcreteModel, Constraint, ConstraintList, 
                            Param, Reals, Var, Set, Suffix)
+from pyomo.core.expr.visitor import identify_variables
 
 # KIPET library imports
 from kipet.model_components.component_expression import Comp
@@ -20,6 +22,11 @@ from kipet.model_tools.visitor_classes import ReplacementVisitor
 from kipet.general_settings.variable_names import VariableNames
 
 logger = logging.getLogger('ModelBuilderLogger')
+
+from string import Template
+ 
+# Create a template that has placeholder for value of x
+header = Template('TemplateBuilder ($model_name)')
 
 
 class TemplateBuilder(object):
@@ -33,7 +40,7 @@ class TemplateBuilder(object):
     """
     __var = VariableNames()
 
-    def __init__(self, **kwargs):
+    def __init__(self, name='default', **kwargs):
         """Initialization for the TemplateBuilder object.
 
         """
@@ -66,6 +73,7 @@ class TemplateBuilder(object):
         self._complementary_states = set()
         self._algebraics = dict()
         self._algebraic_constraints = None
+        self._custom_constraints = None
         self._known_absorbance = None
         self._is_known_abs_set = False
         self._warmstart = False  # add for warmstart CS
@@ -93,6 +101,15 @@ class TemplateBuilder(object):
         self._g_init = None
         self._add_dosing_var = False
         self._solid_spec = None
+        self.name = name
+        self._use_dosing_set = False
+        self.visitor = ReplacementVisitor()
+        self.change_time_amount = 0
+        
+        self._spectral_bounds = (1e-6, None)
+        self._concentration_bounds = (0, None)
+        self._model_bounds = self._concentration_bounds
+
 
     def add_state_variance(self, sigma_dict):
         """Provide a variance for the measured states
@@ -465,6 +482,16 @@ class TemplateBuilder(object):
             self._use_alg_dict = True
         
         return None
+    
+    def set_custom_constraints(self, constraints):
+        """
+        Sets the custom constraints list
+        
+        """
+        self._custom_constraints = constraints
+        
+        return None
+        
 
     def set_objective_rule(self, algebraic_vars):
         """Set the algebraic expressions.
@@ -533,21 +560,21 @@ class TemplateBuilder(object):
                     dummy_balances = self._odes(model, model.start_time)
                 if len(self._component_names) + len(self._complementary_states) != len(dummy_balances):
                     print(
-                        'WARNING: The number of ODEs is not the same as the number of state variables.\n If this is the desired behavior, some odes must be added after the model is created.')
+                        '\tWARNING: The number of ODEs is not the same as the number of state variables.\n If this is the desired behavior, some odes must be added after the model is created.')
 
             else:
                 print(
-                    'WARNING: differential expressions not specified. Must be specified by user after creating the model')
+                    '\tWARNING: differential expressions not specified. Must be specified by user after creating the model')
 
         if self._algebraics:
             if self._algebraic_constraints and not isinstance(self._algebraic_constraints, dict):
                 dummy_balances = self._algebraic_constraints(model, model.start_time)
                 if len(self._algebraics) != len(dummy_balances):
                     print(
-                        'WARNING: The number of algebraic equations is not the same as the number of algebraic variables.\n If this is the desired behavior, some algebraics must be added after the model is created.')
+                        '\tWARNING: The number of algebraic equations is not the same as the number of algebraic variables.\n If this is the desired behavior, some algebraics must be added after the model is created.')
             else:
                 print(
-                    'WARNING: algebraic expressions not specified. Must be specified by user after creating the model')
+                    '\tWARNING: algebraic expressions not specified. Must be specified by user after creating the model')
 
         if self._absorption_data is not None:
             if not self._meas_times:
@@ -562,12 +589,30 @@ class TemplateBuilder(object):
         :return: None
 
         """
+        #print('YOU ARE HERE')
         if hasattr(self, 'template_algebraic_data'):    
             a_info = self.template_algebraic_data
         
+            init_values = a_info.as_dict('value')
+            #print(f'{init_values = }')
+            
+            
+            setattr(model, 'alg_init_dict', init_values)
+            
+            # import itertools
+            
+            # index = itertools.product(model.alltime.sorted_data(), init_values.keys())
+            # index = list(index)
+            # print(f'{index = }')
+            
+            # init_dict = {ind: init_values[ind[1]] for ind in index}
+            
+            
+            
+            
             setattr(model, self.__var.algebraic, Var(model.alltime,
                                                      a_info.names,
-                                                     initialize=a_info.as_dict('value')))
+                                                     initialize=0.2)) #init_dict))
                                                      
             for alg in a_info:
                 if alg.bounds is not None:
@@ -607,6 +652,10 @@ class TemplateBuilder(object):
         
         if hasattr(self, 'template_state_data'):
             var_info.update(self.template_state_data._dict)
+            
+        # if hasattr(self, 'template_algebraic_data'):
+        #     var_info.update(self.template_algebraic_data._dict)
+            
         
         model.init_conditions = Var(model.states,
                                     initialize={k: v.value for k, v in var_info.items()},
@@ -634,8 +683,12 @@ class TemplateBuilder(object):
                                  ordered=True)
 
         def rule_init_conditions(m, k):
+            
             if k in m.mixture_components:
+                #if self._concentration_data is not None:
                 return getattr(m, self.__var.concentration_model)[m.start_time, k] - m.init_conditions[k] == 0
+                #else:
+                #    return Constraint.Skip
             else:
                 return getattr(m, self.__var.state_model)[m.start_time, k] - m.init_conditions[k] == 0
 
@@ -672,24 +725,29 @@ class TemplateBuilder(object):
             self._complementary_states = s_info.names
             var_set.append(s_info)
         
+        model_pred_var_name = {
+                'components' : [self.__var.concentration_model, model.mixture_components],
+                'states' : [self.__var.state_model, model.complementary_states],
+                    }
+        
         for var_class in var_set:
         
-            v_info = var_class    
-        
-            model_pred_var_name = {
-                    'components' : [self.__var.concentration_model, model.mixture_components],
-                    'states' : [self.__var.state_model, model.complementary_states],
-                        }
-            
+            v_info = var_class
             var, model_set = model_pred_var_name[var_class.attr_class_set_name]
-            
             if hasattr(model_set, 'ordered_data') and len(model_set.ordered_data()) == 0:
                 continue
             
+            bounds = (None, None)
+            if var_class.attr_class_set_name == 'components':
+                bounds = self._model_bounds
+                
             setattr(model, var, Var(model.alltime,
                                           model_set,
+                                          bounds=bounds,
                                           initialize=1) 
-                    )    
+                    )
+                
+                
         
             for time, comp in getattr(model, var):
                 if time == model.start_time.value:
@@ -714,15 +772,17 @@ class TemplateBuilder(object):
             c_dict = dict()
             if hasattr(self, f'_is_{var}_deriv'):
                 if getattr(self, f'_is_{var}_deriv') == True:
-                    c_bounds = (None, None)
+                    c_bounds = self._concentration_bounds
                 else:
-                    c_bounds = (0.0, None)
+                    c_bounds = (None, None)
                 
                 if data is not None:
+                
                     
                     for i, row in data.iterrows():
                          c_dict.update({(i, col): float(row[col]) for col in data.columns if not np.isnan(float(row[col]))})
                 
+                    #print(f'{c_dict = }')
                     setattr(model, f'{var}_indx', Set(initialize=list(c_dict.keys()), ordered=True))
                     
                     setattr(model, var, Var(getattr(model, f'{var}_indx'),
@@ -876,7 +936,7 @@ class TemplateBuilder(object):
         
         return None
 
-    def change_time(self, expr_orig, c_mod, new_time, current_model):
+    def change_time(self, expr, new_time, current_model):
         """Method to remove the fixed parameters from the ConcreteModel and replace them with real parameters. This
         converts the dummy variables used to generate the expressions.
 
@@ -892,24 +952,39 @@ class TemplateBuilder(object):
         :return expr_new_time: The expression with the new time
 
         """
-        expr_new_time = expr_orig
-        var_dict = c_mod
+        start = time.time()
+        list_of_vars = list([id(var) for var in identify_variables(expr, include_fixed=False)])
+        set_of_vars = set(list_of_vars).intersection(self.c_mod)
         
-        for model_var, obj_list in var_dict.items():
-            if not isinstance(obj_list[1].index(), int):
-                old_var = obj_list[1]
-                new_var = getattr(current_model, obj_list[0])[new_time, model_var]
+        # for var_id in set_of_vars:
+        #     var_data = self.c_mod[var_id]
+        #     print(var_data.name)
         
+        # print(f'{list_of_vars = }')
+        
+        #for var_id, var_data in self.c_mod.items():
+        for var_id in set_of_vars:
+            var_data = self.c_mod[var_id]
+            # print(f'{var_data = }')
+            #if not var_id in list_of_vars:
+            #    continue
+            if not isinstance(var_data.pyomo_var.index(), int):
+                new_var = getattr(current_model, var_data.model_var)[new_time, var_data.name]
             else:
-                old_var = obj_list[1]
-                new_var = getattr(current_model, obj_list[0])[model_var]
-        
-            expr_new_time = self._update_expression(expr_new_time, old_var, new_var)
+                new_var = getattr(current_model, var_data.model_var)[var_data.name]
+                
+            # print(f'{new_var = }')
+            # print(f'EXPR in TB: {expr}')
+                
+            expr = self._update_expression(expr, var_data.pyomo_var, new_var)
+            # print(f'New EXPR = {expr}')
     
-        return expr_new_time
+        end = time.time()
+        self.change_time_amount += end - start
+    
+        return expr
 
-    @staticmethod
-    def _update_expression(expr, replacement_param, change_value):
+    def _update_expression(self, expr, replacement_param, change_value):
         """Takes the non-estiambale parameter and replaces it with its intitial
         value
         
@@ -919,11 +994,12 @@ class TemplateBuilder(object):
             
         :return: expression new_expr: Updated constraints with the desired parameter replaced with a float
         
+        This is very slow
         """
-        visitor = ReplacementVisitor()
+        visitor = self.visitor
         visitor.change_replacement(change_value)
         visitor.change_suspect(id(replacement_param))
-        new_expr = visitor.dfs_postorder_stack(expr)       
+        new_expr = visitor.walk_expression(expr) 
         return new_expr
 
     def _add_model_odes(self, model):
@@ -946,7 +1022,8 @@ class TemplateBuilder(object):
                         if k in exprs.keys():
                             deriv_var = f'd{self.__var.concentration_model}dt'
                             final_expr = getattr(m, deriv_var)[t, k] == exprs[k].expression
-                            final_expr  = self.change_time(final_expr, self.c_mod, t, m)
+                            # print(f'{final_expr = }')
+                            final_expr  = self.change_time(final_expr, t, m)
                             return final_expr
                         else:
                             return Constraint.Skip
@@ -954,7 +1031,7 @@ class TemplateBuilder(object):
                         if k in exprs.keys():
                             deriv_var = f'd{self.__var.state_model}dt'
                             final_expr = getattr(m, deriv_var)[t, k] == exprs[k].expression
-                            final_expr  = self.change_time(final_expr, self.c_mod, t, m)
+                            final_expr  = self.change_time(final_expr, t, m)
                             return final_expr
                         else:
                             return Constraint.Skip
@@ -976,17 +1053,51 @@ class TemplateBuilder(object):
             if hasattr(self, 'reaction_dict') or hasattr(self, '_use_alg_dict') and self._use_alg_dict:
                 n_alg_eqns = list(self._algebraic_constraints.keys())
                 
+                #print(f'{n_alg_eqns = }')
+                
                 def rule_algebraics(m, t, k):
                     alg_const = self._algebraic_constraints[k].expression
                     alg_var = getattr(m, self.__var.algebraic)[t, k]
                     final_expr = alg_var - alg_const == 0.0
-                    final_expr  = self.change_time(final_expr, self.c_mod, t, m)
+                    final_expr  = self.change_time(final_expr, t, m)
                     return final_expr
     
             model.algebraic_consts = Constraint(model.alltime,
                                                 n_alg_eqns,
                                                 rule=rule_algebraics)
+            
         return None
+ 
+    
+    def _add_custom_constraints(self, model):
+        """Adds the algebraic constraints the model, if any
+
+        :param ConcreteModel model: The created Pyomo model
+
+        :return: None
+
+        """
+        #print(f'{self._custom_constraints = }')
+        
+        if self._custom_constraints:
+            
+            n_alg_eqns = list(range(len(self._custom_constraints)))
+
+            #print(f'{n_alg_eqns = }')
+
+            def rule_customs(m, t, k):
+                custom_const = self._custom_constraints[k].expression
+                #alg_var = getattr(m, self.__var.algebraic)[t, k]
+                final_expr = custom_const
+                final_expr  = self.change_time(final_expr, t, m)
+                return final_expr
+    
+            model.custom_consts = Constraint(model.alltime,
+                                             n_alg_eqns,
+                                             rule=rule_customs)    
+            
+            #print(model.custom_consts.display())
+ 
     
     def _add_objective_custom(self, model):
         """Adds the custom objectives, if any and uses the model variable
@@ -1045,8 +1156,15 @@ class TemplateBuilder(object):
             if estimator != 'simulator':
                 setattr(model, self.__var.concentration_spectra, Var(model.times_spectral,
                                                                  model.mixture_components,
-                                                                 bounds=(0, None),
+                                                                 bounds=self._concentration_bounds,
                                                                  initialize=1))
+            
+            def rule_init_conditions(m, k):
+                if k in m.mixture_components:
+                    return getattr(m, self.__var.concentration_spectra)[m.start_time, k] - m.init_conditions[k] == 0
+
+            #model.init_conditions_cs = Constraint(model.mixture_components, rule=rule_init_conditions)
+            
             
         return None
 
@@ -1058,6 +1176,8 @@ class TemplateBuilder(object):
         :return: None
 
         """
+        min_val = self._spectral_bounds[0]
+        
         if self._absorption_data is not None:
             s_dict = dict()
             for k in self._absorption_data.columns:
@@ -1071,24 +1191,52 @@ class TemplateBuilder(object):
                     s_dict[l, k] = float(self._init_absorption_data[k][l])
                     
         else:
-            s_dict = 0.0
+            s_dict = 0
         
         if self._is_D_deriv == True:
-            s_bounds = (None, None)
+            s_bounds = (min_val, None)
         else:
-            s_bounds = (0.0, None)
+            s_bounds = (min_val, None)
         
         if self.has_spectral_data():    
             
-            self.set_non_absorbing_species(model, self._non_absorbing, check=False)
+            # if hasattr(model, 'abs_components'):
+            #     model.del_component('abs_components')
             
-            if self._is_non_abs_set:
+            # self._is_non_abs_set = True
+            
+            # print(f'{non_abs_list = }')
+            
+            # self._non_absorbing = [] if non_abs_list is None else non_abs_list
+            # #model.add_component('non_absorbing', Set(initialize=self._non_absorbing))
+
+            # # Exclude non absorbing species from S matrix and create subset Cs of C:
+            # #model.add_component('abs_components_names', Set())
+            
+            # set_all_components = set(model.mixture_components)
+            # set_non_abs_components = set(self._non_absorbing)
+            # set_abs_components = set_all_components.difference(set_non_abs_components)
+            
+            # list_abs_components = sorted(list(set_abs_components))
+            
+            # model.add_component('abs_components', Set(initialize=list_abs_components))
+            
+            
+            print(f'{self._non_absorbing = }')
+            
+            self.set_non_absorbing_species(model, self._non_absorbing, check=False)
+            print(f'{self._non_absorbing = }')
+            #if self._is_non_abs_set:
+            if self._non_absorbing is not None:
+                
+                #print(f'{self._is_non_abs_set = }')
                 
                 setattr(model, self.__var.spectra_species, Var(model.meas_lambdas,
                                                                model.abs_components,
                                                                bounds=s_bounds,
-                                                               initialize=0.0))
+                                                               initialize=1))
             else:
+                print(f'{self._is_non_abs_set = }')
                 setattr(model, self.__var.spectra_species, Var(model.meas_lambdas,
                                                                model.mixture_components,
                                                                bounds=s_bounds,
@@ -1313,7 +1461,7 @@ class TemplateBuilder(object):
         setattr(model, self.__var.dosing_variable, Var(model.alltime,
                                                       [self.__var.dosing_component],
                                                       initialize=0))
-            
+        
         def build_step_funs(m, t, k, data):
             
             step = 0
@@ -1416,7 +1564,8 @@ class TemplateBuilder(object):
         :rtype: ConcreteModel
 
         """
-        print(f'# TemplateBuilder: Preparing model for {estimator}')
+        head = header.substitute(model_name=self.name)
+        print(f'# {head}: Preparing model for {estimator}')
         is_simulation = estimator == 'simulator' 
         
         if self._spectral_data is not None and self._absorption_data is not None:
@@ -1425,7 +1574,7 @@ class TemplateBuilder(object):
         pyomo_model = ConcreteModel()
 
         # Declare Sets
-        pyomo_model.mixture_components = Set(initialize=self.template_component_data.names)
+        pyomo_model.mixture_components = Set(initialize=self.template_component_data.get_match('is_algebraic', False))
         
         if not hasattr(self, 'template_parameter_data'):
             parameter_names = []
@@ -1436,7 +1585,7 @@ class TemplateBuilder(object):
         if not hasattr(self, 'template_state_data'):
             state_names = []
         else:
-            state_names = self.template_state_data.names
+            state_names = self.template_state_data.get_match('is_algebraic', False)
         pyomo_model.complementary_states = Set(initialize=state_names)
         
         pyomo_model.states = pyomo_model.mixture_components | pyomo_model.complementary_states
@@ -1453,7 +1602,7 @@ class TemplateBuilder(object):
             alg_names = []
         else:
             alg_names = self.template_algebraic_data.names
-        pyomo_model.algebraics = Set(initialize=alg_names)
+        pyomo_model.algebraics = Set(initialize=alg_names) | Set(initialize=self.template_component_data.get_match('is_algebraic', True)) | Set(initialize=self.template_state_data.get_match('is_algebraic', True))
             
         self._add_algebraic_var(pyomo_model)
         self._add_model_constants(pyomo_model)
@@ -1468,7 +1617,10 @@ class TemplateBuilder(object):
             self._add_unwanted_contribution_variables(pyomo_model)
 
          # Add time step variables
-        self._add_time_steps(pyomo_model)
+         
+        # Check if this is needed
+        if self._use_dosing_set: 
+            self._add_time_steps(pyomo_model)
 
         if not hasattr(self, 'c_mod'):
             self.c_mod = Comp(pyomo_model)
@@ -1483,6 +1635,7 @@ class TemplateBuilder(object):
         # Add constraints
         self._add_model_odes(pyomo_model)
         self._add_algebraic_constraints(pyomo_model)
+        self._add_custom_constraints(pyomo_model)
         
         # Add objective terms for custom data
         if self._custom_objective and estimator == 'p_estimator':
@@ -1542,6 +1695,8 @@ class TemplateBuilder(object):
                     self._known_absorbance_data,
                     check=False
                 )
+            
+        print(f'# {head}: Finished model for {estimator}')
             
         return pyomo_model
 
@@ -1658,11 +1813,6 @@ class TemplateBuilder(object):
 
     def set_non_absorbing_species(self, model, non_abs_list, check=True):
         """Sets the non absorbing component of the model.
-        
-        .. note::
-            
-            This could be simplified by making Cs always exist. This would
-            remove quite a few if statements throughout the code.
 
         :param list non_abs_list: List of non absorbing components.
         :param ConcreteModel model: The corresponding model.
@@ -1681,6 +1831,9 @@ class TemplateBuilder(object):
             model.del_component('abs_components')
         
         self._is_non_abs_set = True
+        
+        print(f'{non_abs_list = }')
+        
         self._non_absorbing = [] if non_abs_list is None else non_abs_list
         #model.add_component('non_absorbing', Set(initialize=self._non_absorbing))
 
@@ -1694,12 +1847,6 @@ class TemplateBuilder(object):
         list_abs_components = sorted(list(set_abs_components))
         
         model.add_component('abs_components', Set(initialize=list_abs_components))
-        #model.add_component('Cs', Var(model.times_spectral, list_abs_components))
-        #model.add_component('abs_subset_contraint', ConstraintList())
-        
-        # for time in model.times_spectral:
-        #     for comp in model.abs_components:
-        #         model.abs_subset_contraint.add(model.Cs[time, comp] == model.C[time, comp])
                     
         return None
 
