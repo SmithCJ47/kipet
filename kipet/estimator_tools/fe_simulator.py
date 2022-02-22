@@ -92,6 +92,8 @@ class FESimulator(PyomoSimulator):
                             inputs_sub=self.inputs_sub,
                             fixed_states=self.fixed_states
                             )
+        
+        self.init = init
 
         init.load_initial_conditions(init_cond=self.ics_)
 
