@@ -7,16 +7,18 @@ import copy
 import numpy as np
 import pandas as pd
 from pyomo.environ import (Block, ConcreteModel, Constraint, minimize, 
-                           Objective, SolverFactory, Var)
+                           Objective, SolverFactory, Var, Set, Param)
 
 # KIPET library imports
 from kipet.model_components.objectives import (absorption_objective, comp_objective,
                                                conc_objective)
 from kipet.estimator_tools.reduced_hessian_methods import define_free_parameters
 from kipet.estimator_tools.results_object import ResultsObject
+from kipet.input_output.kipet_io import print_margin
 from kipet.mixins.parameter_estimator_mixins import PEMixins
 from kipet.general_settings.variable_names import VariableNames
-
+from kipet.general_settings.settings import solver_path
+from kipet.model_tools.pyomo_model_tools import to_dict
 
 class MultipleExperimentsEstimator(PEMixins, object):
     """This class is for Estimation of Variances and parameters when we have multiple experimental datasets.
@@ -37,6 +39,7 @@ class MultipleExperimentsEstimator(PEMixins, object):
         self.global_params = None
         self.parameter_means = False
         self.rm_cov = None
+        self.free_params = None
         self.__var = VariableNames()
 
     
@@ -57,9 +60,10 @@ class MultipleExperimentsEstimator(PEMixins, object):
         margin = 15
         variances_p = self.p_variances
                         
-        print(f'\n# Parameter Values (Confidence: {int(confidence*100)}%)')
+        print()
+        print_margin('MEE Results', sub_phrase=f'Parameter Values (Confidence: {int(confidence*100)}%)')
         for exp in self.experiments:
-            print(f'\nExperiment - {exp}:\n')
+            print(f'Experiment - {exp}:\n')
             for i, (k, p) in enumerate(self.model.experiment[exp].P.items()):
                 if p.is_fixed():
                     continue
@@ -69,8 +73,8 @@ class MultipleExperimentsEstimator(PEMixins, object):
                 
                 key = f'P[{k}]'
                 variance = self.rm_variances[exp][k]
-                if k in self.global_params:
-                    print(f'{k.rjust(margin)} = {p.value:0.4e} +/- {number_of_stds*(variance**0.5):0.4e}    {is_global}')
+                #if k in self.global_params:
+                print(f'{k.rjust(margin)} = {p.value:0.4e} +/- {number_of_stds*(variance**0.5):0.4e}    {is_global}')
                 
             # These need to be set equal to the local values
             if hasattr(self.model.experiment[exp], 'Pinit'):
@@ -124,9 +128,19 @@ class MultipleExperimentsEstimator(PEMixins, object):
                 mee_obj=self.model,
             )
         
-        else:
+        elif solver == 'k_aug':
             from kipet.estimator_tools.reduced_hessian_methods import covariance_k_aug
             covariance_matrix, covariance_matrix_reduced = covariance_k_aug(
+                models_dict, 
+                None,
+                components,
+                parameters, 
+                mee_obj=self.model,
+            )
+            
+        else:
+            from kipet.estimator_tools.reduced_hessian_methods import covariance_pynumero
+            covariance_matrix, covariance_matrix_reduced = covariance_pynumero(
                 models_dict, 
                 None,
                 components,
@@ -228,21 +242,17 @@ class MultipleExperimentsEstimator(PEMixins, object):
         tee = kwargs.get('tee', True)
         scaled_variance = kwargs.get('scaled_variance', False)
         shared_spectra = kwargs.get('shared_spectra', True)
-        solver = kwargs.get('solver', 'ipopt')
+        # solver = kwargs.get('solver', 'ipopt')
+        solver = solver_path('ipopt')
         parameter_means = kwargs.get('mean_start', True)
         
         covariance = kwargs.get('covariance', None)
         
         from kipet import __version__ as version_number
         
-        print('#' * 40)
-        print(f'# KIPET version {version_number}')
-        print(f'# Date: {list(self.reaction_models.values())[0].timestamp}')
-        print(f'# Date: {list(self.reaction_models.values())[0].file.stem}')
-        print(f'# ReactionModel instances: {", ".join(list(self.reaction_models.keys()))}')
-        print('#' * 40)
+        print_margin('Multiple Experiments Estimator (MEE)')
         
-        print("\n# Multiple Experiments: Starting parameter estimation \n")
+        print("# MEE: Starting parameter estimation \n")
        
         combined_model = ConcreteModel()
         
@@ -256,8 +266,13 @@ class MultipleExperimentsEstimator(PEMixins, object):
         else:
             self.global_params = global_params
             
+        for model in self.reaction_models.values():
+            for var, obj in model.p_model.P.items():
+                print(f'{var}: {obj.value}')
+            
         # Parameter name list
         self.global_params_full = [f'P[{p}]' for p in self.global_params]
+    
         
         def build_individual_blocks(m, exp):
             """This function forms the rule for the construction of the individual blocks 
@@ -307,13 +322,14 @@ class MultipleExperimentsEstimator(PEMixins, object):
                 obj_variances = self.variances
                 
                 if hasattr(m, self.__var.spectra_data):
-                    spectral_term = absorption_objective(m, 
-                                                 device_variance=obj_variances[exp]['device'],
-                                                 g_option=self.reaction_models[exp]._G_data['G_contribution'],
-                                                 with_d_vars=with_d_vars,
-                                                 shared_spectra=shared_spectra,
-                                                 species_list=list_components)
-                    
+                    spectral_term = absorption_objective(
+                        m, 
+                        device_variance=obj_variances[exp]['device'],
+                        g_option=self.reaction_models[exp]._G_data['G_contribution'],
+                        with_d_vars=with_d_vars,
+                        shared_spectra=shared_spectra,
+                        species_list=list_components
+                    )
                     concentration_term = conc_objective(m, variance=obj_variances[exp], source='spectra')
                 
                 if hasattr(m, self.__var.concentration_measured):
@@ -323,9 +339,9 @@ class MultipleExperimentsEstimator(PEMixins, object):
                     complementary_state_term = comp_objective(m, variance=obj_variances[exp])
                     
                 expr = weights[0]*spectral_term + \
-                    weights[1]*concentration_term + \
-                    weights[2]*measured_concentration_term + \
-                    weights[3]*complementary_state_term
+                       weights[1]*concentration_term + \
+                       weights[2]*measured_concentration_term + \
+                       weights[3]*complementary_state_term
     
                 return m.error == expr
     
@@ -336,86 +352,197 @@ class MultipleExperimentsEstimator(PEMixins, object):
         combined_model.experiment = Block(self.experiments, rule=build_individual_blocks)
         combined_model.map_exp_to_count = dict(enumerate(self.experiments))
         
-        def param_linking_rule(m, exp, param):
-            prev_exp = None
-            key = next(key for key, value in combined_model.map_exp_to_count.items() if value == exp)
-            if key == 0:
-                return Constraint.Skip
-            else:
-                for key, val in combined_model.map_exp_to_count.items():
-                    if val == exp:
-                        prev_exp = combined_model.map_exp_to_count[key-1]
-                if param in self.global_params and prev_exp != None:
-                    return getattr(combined_model.experiment[exp], self.__var.model_parameter)[param] == getattr(combined_model.experiment[prev_exp], self.__var.model_parameter)[param]
+        
+        initial_P = {}
+        
+        model = 's_model'
+        
+        for i, exp in enumerate(self.experiments):
+            if hasattr(self.reaction_models[exp], 'p_model'):
+                param_model = 'p_model'
+            elif hasattr(self.reaction_models[exp], 's_model'):
+                param_model = 's_model'
+                
+            P_exp = to_dict(getattr(self.reaction_models[exp], param_model).P)
+            if i == 0:
+                initial_P = P_exp
+                continue
+            
+            for k, v in P_exp.items():
+                initial_P[k] += v
+            
+        for k, v in initial_P.items():
+            initial_P[k] = v / len(self.experiments)
+        
+        print(f'{initial_P = }')
+        
+        global_param_name='d'
+        setattr(combined_model, 'current_p_set', Set(initialize=self.global_params))
+        # Better initializations needed
+        setattr(
+            combined_model,
+            global_param_name,
+            Var(
+                getattr(combined_model, 'current_p_set'),
+                initialize=initial_P,
+            )
+        )
+        combined_model.d['k1'].setlb(0)
+        combined_model.d['k2'].setlb(0)
+
+        def rule_fix_global_parameters(m, exp, param):
+            
+            for key, val in combined_model.map_exp_to_count.items():
+                if param in self.global_params and param in getattr(combined_model.experiment[exp], self.__var.model_parameter):
+                    return getattr(combined_model.experiment[exp], self.__var.model_parameter)[param] - getattr(combined_model, global_param_name)[param] == 0
                 else:
                     return Constraint.Skip
-        
+
         set_fixed_params=set()
-        
         for exp in self.experiments:
             for param, param_obj in getattr(combined_model.experiment[exp], self.__var.model_parameter).items():
                 if param_obj.is_fixed():
                     set_fixed_params.add(param)
             
         if len(set_fixed_params) > 0:
-            print(f'# Multiple Experiments: The fixed parameters are:\n{set_fixed_params}')
+            print(f'# MEE: The fixed parameters are:\n{set_fixed_params}')
         
         set_params_across_blocks = self.all_params.difference(set_fixed_params)
-        combined_model.parameter_linking = Constraint(self.experiments, set_params_across_blocks, rule = param_linking_rule)
+        combined_model.parameter_linking = Constraint(self.experiments, set_params_across_blocks, rule = rule_fix_global_parameters)
         
-        def wavelength_linking_rule(m, exp, wave, comp):
-            prev_exp = None
-            key = next(key for key, value in combined_model.map_exp_to_count.items() if value == exp)
-            if key == 0:
-                return Constraint.Skip
-            else:
+        
+        if self.spectra_problem:
+            
+            global_S_name='S_global'
+            
+            # Initialize the S from the variance estimation results
+            initial_S = {}
+            for i, exp in enumerate(self.experiments):
+                S_exp = to_dict(self.reaction_models[exp].v_model.S)
+                if i == 0:
+                    initial_S = S_exp
+                    continue
+        
+                for k, v in S_exp.items():
+                    initial_S[k] += v
+                
+            for k, v in initial_S.items():
+                initial_S[k] = v / len(self.experiments)
+            
+            # initial_S = to_dict(self.reaction_models['reaction-1'].v_model.S)
+            
+            setattr(
+                combined_model,
+                global_S_name,
+                Var(
+                    list(self.all_wavelengths), list(self.all_species),
+                    initialize=initial_S,
+                    bounds=(0, None),
+                )
+            )
+            #print(f'{initial_S = }')
+            
+            def rule_link_wavelengths(m, exp, wave, comp):
+             
                 for key, val in combined_model.map_exp_to_count.items():
-                    if val == exp:
-                        prev_exp = combined_model.map_exp_to_count[key-1]
-                if wave in self.all_wavelengths and prev_exp != None:
-                    if comp in combined_model.experiment[prev_exp].mixture_components and comp in combined_model.experiment[exp].mixture_components:
-                        return getattr(combined_model.experiment[exp], self.__var.spectra_species)[wave,comp] == getattr(combined_model.experiment[prev_exp], self.__var.spectra_species)[wave,comp]
+                    #if wave in self.all_wavelengths and comp in combined_model.experiment[exp].mixture_components:
+                    if (wave, comp) in getattr(combined_model.experiment[exp], self.__var.spectra_species):
+                        return getattr(combined_model.experiment[exp], self.__var.spectra_species)[wave, comp] - getattr(combined_model, global_S_name)[wave, comp] == 0
                     else:
                         return Constraint.Skip
-                else:
-                    return Constraint.Skip
-
-        if shared_spectra == True:
-            combined_model.spectra_linking = Constraint(self.experiments, self.all_wavelengths, self.all_species, rule = wavelength_linking_rule)
+                    # else:
+                    #     return Constraint.Skip
+    
+            if shared_spectra == True:
+                print('shared = True')
+                
+                combined_model.spectra_linking = Constraint(self.experiments, self.all_wavelengths, self.all_species, rule = rule_link_wavelengths)
         
         # Add in experimental weights
         combined_model.objective = Objective(sense=minimize, expr=sum(b.error for b in combined_model.experiment[:]))
         
+        from kipet.estimator_tools.reduced_hessian_methods import add_warm_start_suffixes
+        
+        #add_warm_start_suffixes(combined_model)
+        
+        self.simulation_initialization = False
+        if self.simulation_initialization:
+            
+            parameters_to_unfix = {}
+            
+            global_parameters_fixed = []
+            
+            # You only need to fix the free_params - no more
+            # Go through list and fix those with a model == reaction name
+            # If a parameter is global, check if a model has it and fix it - only once!
+            for fp in self.free_params:
+                
+                #print(fp.identity)
+                
+                if not fp.is_global:
+                    model = combined_model.experiment[fp.model]
+                    model.P[fp.name].fix()
+                    global_parameters_fixed.append((fp.name, fp.model))
+                else:
+                    if fp.identity in global_parameters_fixed:
+                        continue
+                    for key, value in combined_model.map_exp_to_count.items():
+                        model = combined_model.experiment[value]
+                        if fp.name in model.P:
+                            model.P[fp.name].fix()
+                            global_parameters_fixed.append((fp.name, value))
+                            break
+                     
+                        
+            # print(f'{global_parameters_fixed = }')
+                    
+            
+                    
+            # print(f'{parameters_to_unfix = }')
+            simulator = SolverFactory(solver_path('ipopt'))
+            simulator.solve(combined_model, options=solver_opts, tee=True)
+            
+            for param_tuple in global_parameters_fixed:
+                param, model_name = param_tuple
+                model = combined_model.experiment[model_name]
+                model.P[param].unfix()
+                        
         self.model = combined_model
         
         models = {k: v.p_model for k, v in self.reaction_models.items()}
+        
         self.param_names = define_free_parameters(models, self.global_params_full, kind='variable')
         self.param_names_full = define_free_parameters(models, self.global_params_full, kind='full')
         
         if covariance in ['k_aug', 'ipopt_sens']:
             
-            tee = kwargs.pop('tee', False)
+            tee = kwargs.pop('tee', True)
             solver_opts = kwargs.pop('solver_opts', dict())
             optimizer = None
             
             # At the moment k_aug is not working for this
             if covariance == 'k_aug':
+                model_cov = solver_path('ipopt_sens')
                 covariance = 'ipopt_sens'
             
             if covariance == 'ipopt_sens':
+                model_cov = solver_path('ipopt_sens')
                 if not 'compute_red_hessian' in solver_opts.keys():
                     solver_opts['compute_red_hessian'] = 'yes'
                     
                 # Create the optimizer
-                optimizer = SolverFactory(covariance)
+                optimizer = SolverFactory(model_cov)
                 for key, val in solver_opts.items():
                     optimizer.options[key] = val
-            
+
             self.covariance(covariance, optimizer)
             
         else:
-            optimizer = SolverFactory('ipopt')
-            optimizer.solve(combined_model, options=solver_opts, tee=True)            
+            # optimizer = SolverFactory('ipopt')
+            optimizer = SolverFactory(solver_path('ipopt'))
+            print('MEE: Starting optimization')
+            optimizer.solve(combined_model, options=solver_opts, tee=True)  
+            #self.covariance(covariance, None)
         
         solver_results = {}
         
@@ -427,8 +554,9 @@ class MultipleExperimentsEstimator(PEMixins, object):
             
             #setattr(solver_results[i], 'variances', self.rm_variances[i])
             
-        self.results = solver_results                     
-        print('\n# Multiple Experiments: Parameter estimation complete\n')
+        self.results = solver_results           
+        print()          
+        print_margin('MEE: Parameter estimation finished!')
                 
         return solver_results
     
