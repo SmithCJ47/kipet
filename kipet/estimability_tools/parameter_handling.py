@@ -78,7 +78,7 @@ def check_initial_parameter_values(model_object):
     return None
 
 
-def set_scaled_parameter_bounds(model_object, parameter_set=None, rho=10, scaled=True, original_bounds=None):
+def set_scaled_parameter_bounds(model_object, parameter_set=None, parameter_ref_dict=None, rho=10, scaled=True, original_bounds=None):
     """Set the parameter values (scaled) for a given set of parameters. This is done in place.
 
     :param ConcreteModel model_object: A pyomo model instance of the current problem
@@ -91,30 +91,46 @@ def set_scaled_parameter_bounds(model_object, parameter_set=None, rho=10, scaled
     :return: None
     
     """
-    param_set = param = getattr(model_object, __var.model_parameter)
+    #param_set = param = getattr(model_object, __var.model_parameter)
+    
+    opt_vars = __var.optimization_variables
+    
     
     if parameter_set is None:
-        parameter_set = [p for p in param_set]
-    for k, v in param_set.items():
-        if k in parameter_set:
-            if not scaled:
-                ub = rho*v.value
-                lb = 1/rho*v.value
-            else:
-                ub = rho
-                lb = 1/rho
-            if original_bounds is not None:
-                if ub > original_bounds[k][1]:
-                    ub = original_bounds[k][1]
-                if lb < original_bounds[k][0]:
-                    lb = original_bounds[k][0]
-                
-            v.setlb(lb)
-            v.setub(ub)
-            v.unfix()
-            if scaled:
-                v.set_value(1)
-        else:
-            v.fix()
+        parameter_set = []
+        for var in opt_vars:
+            if hasattr(model_object, var):
+                param_set = getattr(model_object, var)
+                for param, obj in param_set.items():
+                    if obj.fixed:
+                        continue
+                    parameter_set.append(param)
+    
+    for var in opt_vars:
+        if hasattr(model_object, var):
+            var_obj = getattr(model_object, var)
+    
+            for k, v in var_obj.items():
+                # print(k, v.value)
+                if k in parameter_set:
+                    if not scaled:
+                        ub = rho*v.value
+                        lb = 1/rho*v.value
+                    else:
+                        ub = rho
+                        lb = 1/rho
+                    if original_bounds is not None:
+                        if ub > original_bounds[k][1]:
+                            ub = original_bounds[k][1]
+                        if lb < original_bounds[k][0]:
+                            lb = original_bounds[k][0]
+                        
+                    v.setlb(lb)
+                    v.setub(ub)
+                    v.unfix()
+                    if scaled:
+                        v.set_value(1)
+                else:
+                    v.fix()
 
     return None
