@@ -22,6 +22,11 @@ from kipet.main_modules.reaction_model import ReactionModel
 from kipet.general_settings.settings import Settings
 from kipet.general_settings.unit_base import UnitBase
 from kipet.estimator_tools.multiprocessing_kipet import Multiprocess
+from kipet.input_output.kipet_io import print_margin
+
+from kipet.model_tools.pyomo_model_tools import get_vars
+from kipet.model_tools.parameter_manager import ParameterManager, ModelParameter
+from kipet.general_settings.variable_names import VariableNames
 
 class ReactionSet:
     
@@ -86,7 +91,9 @@ class ReactionSet:
         self.file = pathlib.Path(inspect.stack()[1].filename)
         
         t = time.localtime()
-        self.timestamp = f'{t.tm_year}-{t.tm_mon:02}-{t.tm_mday:02}-{t.tm_hour:02}-{t.tm_min:02}-{t.tm_sec:02}'
+        file_add = f'{t.tm_year}-{t.tm_mon:02}-{t.tm_mday:02}-{t.tm_hour:02}-{t.tm_min:02}-{t.tm_sec:02}'
+        self.timestamp = f'{file_add}'
+        
 
     def __str__(self):
         
@@ -220,7 +227,8 @@ class ReactionSet:
                 #     new_kipet_model.model = None
                 
                 # if not copy_builder:
-                #     new_kipet_model.builder = TemplateBuilder()
+                from kipet.model_tools.template_builder import TemplateBuilder
+                new_kipet_model._builder = TemplateBuilder(name=new_kipet_model.name)
                     
                 # if not copy_components:
                 #     new_kipet_model.components = ComponentBlock()
@@ -299,12 +307,15 @@ class ReactionSet:
         if isinstance(model, ReactionModel):
             model.unit_base = self.ub
             self.reaction_models[model.name] = model
+            model.timestamp = self.timestamp
         else:
             raise ValueError("ReactionSet can only add ReactionModel instances.")
 
         return None
     
-    def run_opt(self, method='mee', strategy='trust-region', parallel=False, pre_solve=False):
+    def run_opt(self, method='mee', strategy='trust-region', parallel=False,
+                pre_solve=False, rh_method='pynumero', outer_locals=False,
+                variance_only=False):
         """This method will perform parameter fitting for all ReactionModels in
         the ReactionSet models attribute. If more than one ReactionModel instance
         is present, the MultipleExperimentEstiamtor is used to solve for the
@@ -321,8 +332,19 @@ class ReactionSet:
         :return: None
         
         """
+        from kipet import __version__ as version_number
+        print_margin(f'KIPET v. {version_number}')
+        
+        print(f'# Date: {list(self.reaction_models.values())[0].timestamp}')
+        print(f'# File: {list(self.reaction_models.values())[0].file.stem}')
+        print(f'# ReactionModel instances: {", ".join(list(self.reaction_models.keys()))}')
+        print()
+        
         if hasattr(self, "mee"):
             del self.mee
+
+        if self.global_parameters is None:
+            self.global_parameters = list(self.all_params)
 
         from kipet.input_output.kipet_io import Tee
         results_dir = pathlib.Path.cwd().joinpath(self.file.parent, 'results', f'{self.file.stem.lstrip("<").rstrip(">")}-{self.timestamp}')
@@ -330,37 +352,36 @@ class ReactionSet:
             results_dir.mkdir(parents=True)
         filename = results_dir.joinpath('log.txt') 
 
-        if len(self.reaction_models) > 1:
-            print('# ReactionSet: Multiple ReactionModel instances detected')
-            if method == "mee":
-                print('# ReactionSet: Starting multiple experiment estimator')
-                
-                if parallel:
-                    self.solve_mp()
-                else:
-                    self._calculate_parameters()
-                    
-                self._create_multiple_experiments_estimator()
-                with Tee(filename): 
-                    self._run_full_model()
+        #if len(self.reaction_models) > 1:
+        if method == "mee":
+            print('# ReactionSet: Starting multiple experiment estimator\n')
             
-            elif method == 'nsd':
-                print('# ReactionSet: Starting nested Schur decomposition estimator')
-                if pre_solve:
-                    self._calculate_parameters()
-                    
-                with Tee(filename):  
-                    self._mee_nsd(strategy=strategy, parallel=parallel)
-            
+            if parallel:
+                #self.solve_mpire()
+                self.solve_mp()
             else:
-                raise ValueError("Not a valid method for optimization")
+                self._calculate_parameters(pre_solve=pre_solve, variance_only=variance_only)
                 
-            print('# KIPET procedure for multiple experiments finished\n')
-
+            self._create_multiple_experiments_estimator()
+            with Tee(filename): 
+                self._run_full_model()
+        
+        elif method == 'nsd':
+            print('# ReactionSet: Starting nested Schur decomposition estimator\n')
+           
+            with Tee(filename):  
+                self._mee_nsd(strategy=strategy, parallel=parallel, rh_method=rh_method, pre_solve=pre_solve, local_as_global=outer_locals)
+        
         else:
-            reaction_model = self.reaction_models[list(self.reaction_models.keys())[0]]
-            results = reaction_model.run_opt()
-            self.results[reaction_model.name] = results
+            raise ValueError("Not a valid method for optimization")
+                
+            print_margin('# KIPET procedure finished!')
+
+
+        # else:
+        #     reaction_model = self.reaction_models[list(self.reaction_models.keys())[0]]
+        #     results = reaction_model.run_opt()
+        #     self.results[reaction_model.name] = results
 
         return None
 
@@ -368,9 +389,9 @@ class ReactionSet:
         """A quick wrapper for MEE without big changes
         
         """
-        
         self.mee = MultipleExperimentsEstimator(self.reaction_models)
         self.mee.confidence_interval = self.settings.parameter_estimator.confidence
+        self.mee.free_params = self.define_free_parameters
 
         if "spectral" in self.data_types:
             self.settings.general.spectra_problem = True
@@ -379,19 +400,53 @@ class ReactionSet:
 
         self.mee.spectra_problem = self.settings.general.spectra_problem
 
-    def _calculate_parameters(self):
+    def _calculate_parameters(self, pre_solve=False, variance_only=False):
         """Uses the ReactionModel framework to calculate parameters instead of
         repeating this in the MEE
         
         """
+        from kipet.estimator_tools.reduced_hessian_methods import add_warm_start_suffixes, update_warm_start
+        
         for name, model in self.reaction_models.items():
-            if not model._optimized:
-                model.min_variance = self.min_variance
-                model.run_opt()
+            if not model._optimized and not pre_solve:
+                
+                print_margin('ReactionSet - Model Preparation', sub_phrase=f'{model.name}')
+                
+                simulator = 'simulator'
+                estimator = 'p_estimator'
+                #model.simulate()
+                model._ve_set_up()
+                model._pe_set_up(solve=pre_solve)
+                vars_to_init = get_vars(model.p_model)
+                
+                #add_warm_start_suffixes(model.p_model)
+                model.p_model.ipopt_zL_in.update(model.p_model.ipopt_zL_out)
+                model.p_model.ipopt_zU_in.update(model.p_model.ipopt_zU_out)
+                
+                # for var in vars_to_init:
+                #     if hasattr(model.results_dict[simulator], var) and var != 'S':
+                #         getattr(model, estimator).initialize_from_trajectory(var, getattr(model.results_dict[simulator], var))
+                #     elif var == 'S' and hasattr(model.results_dict[simulator], 'S'):
+                #         getattr(model, estimator).initialize_from_trajectory(var, getattr(model.results_dict[simulator], var))
+                #     else:
+                #         pass
+                        #print(f'Variable: {var} is not updated')
+            
+            elif not model._optimized and pre_solve:
+                print(f'you are here for some reason: {pre_solve}')
+                model.run_opt(print_header=False)
             else:
-                print(f"Model {model.name} has already been optimized")
+                print(f"Model {model.name} has already been optimized or prepared")
+                
+            # for param, obj in model.p_model.P.items():
+            #     if model.parameters[param].fixed:
+            #         obj.fix()
+            
+        for name, model in self.reaction_models.items():
+            model.min_variance = self.min_variance
 
         return None
+
 
     def _run_full_model(self):
         """Runs the MEE after everything has been set up"""
@@ -410,7 +465,7 @@ class ReactionSet:
 
         return results
 
-    def _mee_nsd(self, strategy='ipopt', parallel=False):
+    def _mee_nsd(self, strategy='ipopt', parallel=False, rh_method='pynumero', pre_solve=False, local_as_global=False):
         """Performs the NSD on the multiple ReactionModel instances
 
         :parameter str strategy: Method used to control the outer problem
@@ -429,22 +484,26 @@ class ReactionSet:
         if self.scale_variance:
             for model in self.reaction_models.values():
                 model.settings.parameter_estimator.scale_variance = True
-                if self.global_variance:
-                    model.min_variance_global = self.min_variance
+                #if self.global_variance:
+                model.min_variance_global = self.min_variance
+                
+        self._calculate_parameters(pre_solve=pre_solve)
 
-        if self.global_parameters is not None:
-            global_parameters = self.global_parameters
-        else:
-            global_parameters = self.all_params
+        self.param_manager = ParameterManager(self.reaction_models)
 
         self.nsd = NSD(self.reaction_models,
-                        strategy=strategy,
-                        global_parameters=self.global_parameters,
-                        parallel=parallel,
-                        kwargs=kwargs)
+                       strategy=strategy,
+                       global_parameters=self.global_parameters,
+                       parallel=parallel,
+                       kwargs=kwargs,
+                       rh_method=rh_method,
+                       rs_min_variance=self.min_variance,
+                       all_params=self.param_manager,
+                       #all_params=self.rs_params,
+                       free_params=self.define_free_parameters,
+                       local_as_global=local_as_global)
 
         #print(self.nsd.d_init)
-
         results = self.nsd.run_opt()
 
         self.results = results
@@ -453,6 +512,25 @@ class ReactionSet:
 
         return results
     
+
+    @property
+    def rs_params(self):
+        
+        parameter_list = []
+        for i, (name, model) in enumerate(self.reaction_models.items()):
+            for param in model.parameters:
+                if param.fixed:
+                    continue
+                
+                p_obj = ModelParameter(
+                    param.name, 
+                    model.name, 
+                    param.name in self.global_parameters,
+                    param)
+                parameter_list.append(p_obj)
+                
+        return parameter_list
+        
 
     @property
     def all_params(self):
@@ -466,7 +544,7 @@ class ReactionSet:
         set_of_all_model_params = set()
         for name, model in self.reaction_models.items():
             set_of_all_model_params = set_of_all_model_params.union(
-                model.parameters.names
+                model.parameters.get_match('fixed', False)
             )
 
         return set_of_all_model_params
@@ -517,7 +595,10 @@ class ReactionSet:
         
         if self.scale_variance:
             for i, model in self.reaction_models.items():
-                var = min(min([v for v in model.variances.values()]), var)
+                if not model.spectra:
+                    var = min(min([v for v in model.components.variances.values()]), var)
+                else:
+                    var = min(min([v for v in model.results_dict['v_estimator'].sigma_sq.values()]), var)
     
         return var
     
@@ -545,8 +626,10 @@ class ReactionSet:
             
         """
         from kipet.visuals.reports import Report
-        for reaction in self.reaction_models.values():
+        for name, reaction in self.reaction_models.items():
+            print(f'# ReactionSet: Making plots for {name}')
             reaction.plot()
+            
         self.report_object = Report(list(self.reaction_models.values()))
         self.report_object.generate_report()
         
@@ -555,7 +638,6 @@ class ReactionSet:
         print('process_id', os.getpid())
         
         model_to_solve = list(self.reaction_models.values())[i - 1]
-        
         data = self.solve(model_to_solve)
         q.put(data)
         print('all done')
@@ -596,10 +678,9 @@ class ReactionSet:
                 print('# Multiprocessing start method already fixed')   
     
         mp = Multiprocess(self.func)
-        data = mp(num_processes = min(len(self.reaction_models), cpu_count()))
+        data = mp(num_processes = len(self.reaction_models)) #cpu_count()))
         
         self.mp_results = data
-        #print(data.keys())
         estimator = 'p_estimator'
         
         for i, model in enumerate(self.reaction_models.values()):
@@ -617,11 +698,410 @@ class ReactionSet:
                 elif var == 'S' and hasattr(model.results_dict[estimator], 'S'):
                     getattr(model, estimator).initialize_from_trajectory(var, getattr(model.results_dict[estimator], var))
                 else:
-                    print(f'Variable: {var} is not updated')
+                    pass
+                    #print(f'Variable: {var} is not updated')
             
         return None
     
+    @property
+    def define_free_parameters(self):
+        """Identifies the free variables used in MEE and NSD methods
+           
+        :return: list of free variable names
+        
+        """
+        free_parameters = []
+        global_accounted = {}
+        
+        for p_obj in self.rs_params:
+            
+            if p_obj.parameter_object.fixed:
+                continue
+            
+            if p_obj.is_global and p_obj.name in global_accounted:
+                continue
+            
+            else:
+                free_parameters.append(p_obj)
+                global_accounted[p_obj.name] = True
+        
+        return free_parameters
+    
+   #%% 
+# class ModelParameter:
+    
+#     def __init__(self, p_name, m_name, is_global, parameter_object):
+        
+#         self.name = p_name
+#         self.model = m_name #if not is_global else 'global'
+#         self.is_global = is_global
+#         self.parameter_object = parameter_object
+        
+#     def __str__(self):
+        
+#         return f'Parameter: {self.name}, {self.model}, {self.is_global}'
+    
+#     def __repr__(self):
+        
+#         return f'ModelParameter(name={self.name}, model={self.model}, is_global={self.is_global}'
+    
+#     @property
+#     def identity(self):
+        
+#         return f'{self.name}-{self.model}'
+#  #%%   
+    
+# class ParameterManager:
+    
+#     def __init__(self, reaction_set_object):
+        
+#         self.reaction_set_object = reaction_set_object
+        
+#         self.parameters = self.build_parameter_list()
+        
+#         self.parameter_dict = self._build_var_dict()
+        
+        
+#     def build_parameter_list(self):
+        
+#         parameter_list = []
+#         for i, (name, model) in enumerate(self.reaction_set_object.reaction_models.items()):
+#             for param in model.parameters:
+#                 if param.fixed:
+#                     continue
+                
+#                 p_obj = ModelParameter(
+#                     param.name, 
+#                     model.name, 
+#                     param.name in self.reaction_set_object.global_parameters,
+#                     param)
+#                 parameter_list.append(p_obj)
+                
+#             if hasattr(model.p_model, 'S'):
+#                 parameter_list += self.add_S_params_to_global(model)
+                
+#         return parameter_list
     
     
+#     @staticmethod
+#     def add_S_params_to_global(r_model):
+#         """Adds the S variables to the global list for use with NSD
+        
+#         """
+#         from itertools import product
+        
+#         spectra_list = []
+#         #for i, (name, r_model) in enumerate(reaction_set_object.reaction_models.items()):
+        
+#         abs_comps = r_model.p_estimator.comps['absorbing']
+#         wavelengths = r_model.spectra.data.columns
+#         S_param_index = product(wavelengths, abs_comps)
+        
+#         for S_param in S_param_index:
+#             s_obj = ModelParameter(
+#                 ','.join(list(map(str, S_param))),
+#                 r_model.name, 
+#                 True,
+#                 getattr(r_model.p_model, 'S')[S_param])
+        
+#             spectra_list.append(s_obj)
+            
+#         return spectra_list
     
+    
+#     def _build_var_dict(self):
+        
+#         #%%
+#         from kipet.general_settings.variable_names import VariableNames
+#         from collections import namedtuple
+#         #r_model = r1
+#         __var = VariableNames()
+        
+#         P_var = namedtuple('P_var', ('fullname', 'name', 'index', 'model_var', 'pyomo_var', 'reaction', 'is_global', 'identity'))
+#         var_objs = {}
+#         params = []
+#         #reaction_set_object = lab
+        
+#         for i, (name, r_model) in enumerate(self.reaction_set_object.reaction_models.items()): 
+        
+#             for opt_var in __var.optimization_variables:
+#                 if hasattr(r_model.p_model, opt_var):
+#                     for k, v in getattr(r_model.p_model, opt_var).items():
+#                         #print(f'{k = }')
+#                         if v.fixed or v.stale or k in params:
+#                             # print(f'In set: {k in params}')
+#                             # print(f'Is fix: {v.fixed}')
+#                             # print(f'Is old: {v.stale}')
+                                  
+#                             continue
+#                         else:
+#                             #print('adding to vars')
+#                             p_var = P_var(f'{name}.{v.name}', v.name, k, opt_var, v, name, k in self.reaction_set_object.global_parameters, f'{v.name}-{name}')
+#                             var_objs[p_var.fullname] = p_var
+                            
+#             if hasattr(r_model.p_model, 'S'):
+#                 for k, v in getattr(r_model.p_model, 'S').items():
+#                     #print(f'{k = }')
+#                     if v.fixed or v.stale or k in params:
+#                         # print(f'In set: {k in params}')
+#                         # print(f'Is fix: {v.fixed}')
+#                         # print(f'Is old: {v.stale}')
+                              
+#                         continue
+#                     else:
+#                         #print('adding to vars')
+#                         p_var = P_var(f'{name}.{v.name}', v.name, k, 'S', v, name, True, f'{v.name}-{name}')
+#                         var_objs[p_var.fullname] = p_var
+                        
+#             if hasattr(r_model.p_model, 'C'):
+#                 for k, v in getattr(r_model.p_model, 'C').items():
+#                     #print(f'{k = }')
+#                     if v.fixed or v.stale or k in params:
+#                         # print(f'In set: {k in params}')
+#                         # print(f'Is fix: {v.fixed}')
+#                         # print(f'Is old: {v.stale}')
+                              
+#                         continue
+#                     else:
+#                         #print('adding to vars')
+#                         p_var = P_var(f'{name}.{v.name}', v.name, k, 'C', v, name, False, f'{v.name}-{name}')
+#                         var_objs[p_var.fullname] = p_var
+                        
+#         print(var_objs)
+#         return var_objs
+    
+#     #%%
+#         #%%
+    
+#     # @property
+#     def parameters_model(self, model_name, query='all'):
+        
+#         parameters_in_model = {}
+        
+#         if query == 'all':
+#             for fullname, parameter in self.parameter_dict.items():
+#                 if parameter.reaction == model_name:
+#                     parameters_in_model[fullname] = parameter
+                    
+#         elif query == 'global':
+#             for fullname, parameter in self.parameter_dict.items():
+#                 if parameter.is_global and parameter.reaction == model_name:
+#                     parameters_in_model[fullname] = parameter
+                    
+#         elif query == 'local':
+#             for fullname, parameter in self.parameter_dict.items():
+#                 if not parameter.is_global and parameter.reaction == model_name:
+#                     parameters_in_model[fullname] = parameter
+                    
+#         return parameters_in_model
+    
+    
+#     # @property
+#     # def parameters_model(self, model_name, query='all'):
+        
+#     #     parameters_in_model = []
+        
+#     #     if query == 'all':
+#     #         for parameter in self.parameters:
+#     #             if parameter.model == model_name:
+#     #                 parameters_in_model.append(parameter)
+                    
+#     #     elif query == 'global':
+#     #         for parameter in self.parameters:
+#     #             if parameter.is_global and parameter.model == model_name:
+#     #                 parameters_in_model.append(parameter)
+                    
+#     #     elif query == 'local':
+#     #         for parameter in self.parameters:
+#     #             if not parameter.is_global and parameter.model == model_name:
+#     #                 parameters_in_model.append(parameter)
+                    
+#     #     return parameters_in_model
+    
+
+#     def unique_globals(self, include_locals=False, model_name=None, return_locals=False):
+        
+#         global_set = []
+#         global_accounted = {}
+        
+#         for fullname, parameter in self.parameter_dict.items():
+            
+#             if model_name is not None:
+#                 if parameter.reaction != model_name:
+#                     continue
+            
+#             if parameter.pyomo_var.fixed:
+#                 continue
+            
+#             if parameter.is_global and parameter.name in global_accounted:
+#                 continue
+            
+#             if not parameter.is_global and not include_locals:
+#                 continue
+            
+#             else:
+#                 global_set.append(parameter)
+#                 global_accounted[parameter.name] = True
+            
+#         return global_set
+    
+    
+#     # def unique_globals_dict(self, include_locals=False, model_name=None, return_locals=False):
+        
+#     #     global_set = []
+#     #     global_accounted = {}
+        
+#     #     for p_obj in self.parameters:
+            
+#     #         if model_name is not None:
+#     #             if p_obj.model != model_name:
+#     #                 continue
+            
+#     #         if p_obj.parameter_object.fixed:
+#     #             continue
+            
+#     #         if p_obj.is_global and p_obj.name in global_accounted:
+#     #             continue
+            
+#     #         if not p_obj.is_global and not include_locals:
+#     #             continue
+            
+#     #         else:
+#     #             global_set.append(p_obj)
+#     #             global_accounted[p_obj.name] = True
+            
+#     #     return global_set
+    
+    
+#     def free_parameters(self, model, include_locals=False):
+        
+#         global_set = set()
+#         global_accounted = {}
+        
+#         for p_obj in self.parameters:
+            
+#             if p_obj.parameter_object.fixed:
+#                 continue
+            
+#             if p_obj.is_global and p_obj.name in global_accounted:
+#                 continue
+            
+#             if not p_obj.is_global and not include_locals:
+#                 continue
+            
+#             else:
+#                 global_set.add(p_obj)
+#                 global_accounted[p_obj.name] = True
+            
+#         return global_set
+            
+    
+#     def find_parameter(self, parameter_name):
+        
+        
+#         #%%
+#         # self = lab.param_manager    
+#         # parameter_name = 'P[k1]'
+        
+            
+#         models = tuple(param.reaction for param in self.parameter_dict.values() if param.name == parameter_name)
+        
+#         # print(models)
+#         #%%
+#         return models
+
+    
+    # def parameter_object(self, parameter_name, parameter_model):
+        
+    #     return getattr(model_parameter_object, parameter_name)]
+    
+    
+# pm = ParameterManager(lab)
+
+# print(pm.parameters)
+# print(pm.parameters_model('reaction-2'))
+# print(pm.parameters_model('reaction-2', 'global'))
+# print(pm.parameters_model('reaction-2', 'local'))
+    
+    #%%
+    #def 
+    
+    
+    # def func_mpire(self, i):
+    #     print('starting')
+    #     #print('process_id', os.getpid())
+        
+    #     model_to_solve = list(self.reaction_models.values())[i - 1]
+    #     print(f'{model_to_solve.name = }')
+    #     data = self._prepare_models(model_to_solve)
+    #     print('all done')
+        
+    #     print(data)
+        
+    #     return dict(i=data) #data
+   
+    # @staticmethod
+    # def solve_mpire_model(model):
+    #     """Uses the ReactionModel framework to calculate parameters instead of
+    #     repeating this in the MEE
+
+    #     # Add mp here
+
+    #     """
+    #     if not model._optimized:
+    #         model.run_opt()
+    #         print('Model has been optimized')
+    #     else:
+    #         print(f"Model {model.name} has already been optimized")
+
+
+    #     attr_list = ['name', 'results_dict']
+
+    #     model_dict = {}
+    #     for attr in attr_list:
+    #         model_dict[attr] = getattr(model, attr)
+
+    
+    # def solve_mpire(self):
+        
+    #     from mpire import WorkerPool
+
+    #     data = range(len(self.reaction_models))
+
+    #     n_jobs = 4
+
+    #     with WorkerPool(n_jobs=n_jobs, use_dill=True) as pool:
+    #         results = pool.map(self.func_mpire, data, progress_bar=True)
+            
+
+    # def _prepare_models(self, model, pre_solve=True):
+        
+    #     """Replaces the loop in _calculate_parameters
+    #     """
+    #     if not model._optimized and not pre_solve:
+    #         model.min_variance = self.min_variance
+            
+    #         print_margin('ReactionSet - Model Preparation', sub_phrase=f'{model.name}')
+            
+    #         simulator = 'simulator'
+    #         estimator = 'p_estimator'
+    #         model.simulate()
+    #         model._pe_set_up(solve=False)
+    #         vars_to_init = get_vars(model.p_model)
+            
+    #         for var in vars_to_init:
+    #             if hasattr(model.results_dict[simulator], var) and var != 'S':
+    #                 getattr(model, estimator).initialize_from_trajectory(var, getattr(model.results_dict[simulator], var))
+    #             elif var == 'S' and hasattr(model.results_dict[simulator], 'S'):
+    #                 getattr(model, estimator).initialize_from_trajectory(var, getattr(model.results_dict[simulator], var))
+    #             else:
+    #                 pass
+    #                 #print(f'Variable: {var} is not updated')
+        
+    #     elif not model._optimized and pre_solve:
+    #         model.run_opt(print_header=False)
+    #     else:
+    #         print(f"Model {model.name} has already been optimized or prepared")
+            
+    #     return model
     
