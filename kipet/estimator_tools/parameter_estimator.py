@@ -194,17 +194,11 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         
         if jump is not None:
             
-            print('JUMPS are being used! ')
-            
-            #from kipet.estimator_tools.jumps_method import set_up_jumps
-            #set_up_jumps(self.model, run_opt_kwargs)
-            
-            from kipet.estimator_tools.pe_jumps import set_up_jumps
             from kipet.estimator_tools.fe_initialization import FEInit
             
             fe_init_obj = FEInit(self.model, jump)
             fe_init_obj.add_constraints()
-            # set_up_jumps(self.model, jump)
+          
             
             
         # # I am not sure if this is still needed...
