@@ -9,14 +9,44 @@ from operator import index
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from pyomo.environ import SolverFactory, Suffix
-from scipy.sparse import coo_matrix, csr_matrix, csc_matrix, triu
+from pyomo.contrib.pynumero.interfaces.pyomo_nlp import PyomoNLP
+from pyomo.contrib.pynumero.interfaces.nlp_projections import ProjectedNLP
+from pyomo.contrib.pynumero.algorithms.solvers.cyipopt_solver import CyIpoptSolver, CyIpoptNLP
+
+from pyomo.environ import SolverFactory, Suffix, ConstraintList, VarList
+from scipy.sparse.linalg import spsolve
+from scipy.sparse import coo_matrix, csr_matrix, csc_matrix, triu, lil_matrix, bmat, vstack
 
 # Kipet library imports
 from kipet.general_settings.variable_names import VariableNames
 from kipet.model_tools.pyomo_model_tools import convert
+from kipet.general_settings.settings import solver_path, Settings
+
     
 __var = VariableNames()
+__settings = Settings()
+
+
+def generate_model_data(model, nlp):
+    """Generates a dictionary of model data used in reduced Hessian methods
+    
+    """
+    if isinstance(nlp, ProjectedNLP):
+        nlp = nlp._original_nlp
+        
+    dummy_constraints = [v for v in getattr(model, 'fix_params_to_global').values()]
+    dummy_vars = [id(v) for v in getattr(model, 'd').values()]
+    attr_dict = {}
+    attr_dict['varList'] = [v for v in nlp.get_pyomo_variables() if id(v) not in dummy_vars]
+    attr_dict['conList'] = nlp.get_pyomo_constraints()
+    attr_dict['zLList'] = [v for v in attr_dict['varList'] if v.lb is not None]
+    attr_dict['zUList'] = [v for v in attr_dict['varList'] if v.ub is not None]
+    attr_dict['conList_dummy'] = [v for v in attr_dict['conList'] if v in dummy_constraints]
+    attr_dict['conList_red'] = [v for v in attr_dict['conList'] if v not in dummy_constraints]
+    attr_dict['var_index_names'] = [v.name for v in attr_dict['varList']]
+    attr_dict['init_data'] = {v.name : v.value for v in attr_dict['varList']}
+        
+    return attr_dict
 
 
 def define_free_parameters(models_dict, global_params=None, kind='full'):
@@ -35,9 +65,7 @@ def define_free_parameters(models_dict, global_params=None, kind='full'):
     """
     global_params = [] if global_params is None else global_params
     param_names = []
-    model_count = False
-    
-    # print(f'In define: {global_params = }')
+    global_accounted = {}
     
     methods = {'variable': 'getname',
                'simple': 'simple',
@@ -53,17 +81,63 @@ def define_free_parameters(models_dict, global_params=None, kind='full'):
         else:
             return p
     
-    for exp, model in models_dict.items():
+    for i, (exp, model) in enumerate(models_dict.items()):
         for parameter_kind in __var.optimization_variables:
             if hasattr(model, parameter_kind):
                 for p, v in getattr(model, parameter_kind).items():
-                    if v.is_fixed() or model_count and v.getname() in global_params:
-                        continue
-                    param_names.append(name(methods[kind], p, v))
                     
-        model_count = True
+                    # print(f'The name in loop: {v}, {v.getname()}, {v.to_string()}')
+                    # print(f'{v.fixed = }')
+                    # print(v.pprint())
+                    if v.fixed or v.stale:
+                        # print(f'Not using {p}')
+                        # print(f'{v.fixed = }')
+                        # print(f'{v.stale = }')
+                        continue
+                    
+                    if i > 0 and v.getname() in global_params and v.getname() in global_accounted:
+                        # print(f'Not using {p}')
+                        continue
+                    
+                    else:
+                        param_names.append(name(methods[kind], p, v))
+                        global_accounted[v.getname()] = True
+        
+    # print(f'{len(param_names) = }')
     
     return param_names
+
+
+def spectral_hess_reorder(reaction_model):
+    """Order of the variables for covariance with spectral problems. This is
+    to make the calculations work for the pynumero and k_aug (ncp > 1).
+    """
+    index_to_variable = []
+    model = reaction_model.p_model
+    component_set = reaction_model.p_estimator.comps['unknown_absorbance']
+    parameters = reaction_model.p_estimator.param_names_full
+    
+    if hasattr(model, 'C'):
+        var = 'C'
+        for index in getattr(model, var).index_set():
+            if index[1] in component_set:
+                v = getattr(model, var)[index]
+                index_to_variable.append(v.name)
+
+    if hasattr(model, 'S'):
+        var = 'S'
+        for index in getattr(model, var).index_set():
+            if index[1] in component_set:
+                v = getattr(model, var)[index]
+                index_to_variable.append(v.name)
+                
+    for parameter_kind in __var.optimization_variables:
+        if hasattr(model, parameter_kind):
+            for v in getattr(model, parameter_kind).values():
+                if v.to_string() in parameters and not v.fixed:
+                    index_to_variable.append(v.name)
+                        
+    return index_to_variable
 
 
 def define_reduce_hess_order(models_dict, component_set, param_names_full, k_aug):
@@ -110,7 +184,7 @@ def define_reduce_hess_order(models_dict, component_set, param_names_full, k_aug
         for parameter_kind in __var.optimization_variables:
             if hasattr(model, parameter_kind):
                 for v in getattr(model, parameter_kind).values():
-                    print(v.to_string, v.fixed)
+                    #print(v.to_string, v.fixed)
                     if v.to_string() in param_names_full and not v.fixed:
                         index_to_variable[count_vars] = v
                         if k_aug:
@@ -133,6 +207,8 @@ def compute_covariance(models_dict, hessian, free_params, all_variances):
     
     """
     H = hessian
+    if isinstance(H, pd.DataFrame):
+        H = H.values
     B = make_B_matrix(models_dict, free_params, all_variances)
     Vd = make_Vd_matrix(models_dict, all_variances)
     
@@ -149,7 +225,6 @@ def compute_covariance(models_dict, hessian, free_params, all_variances):
         
     
 def make_B_matrix(models_dict, free_params, all_variances):
-
     """This method generates a B matrix for the covariance calculations in both
     single and multiple experiments.
 
@@ -164,7 +239,7 @@ def make_B_matrix(models_dict, free_params, all_variances):
     C_part = merge_blocks('C', models_dict, all_variances)
     
     sy, sx = S_part.shape
-    M = np.zeros((C_part.size + S_part.size + free_params, C_part.shape[1]*S_part.shape[1]))
+    M = lil_matrix((C_part.size + S_part.size + free_params, C_part.shape[1]*S_part.shape[1]))
     c_index_start = C_part.size
     
     for i in range(C_part.shape[1]):
@@ -176,7 +251,7 @@ def make_B_matrix(models_dict, free_params, all_variances):
         for ci in range(sx):
             M[c_index_start + ci*cy : c_index_start + (ci + 1)*cy, cx*ci + i*sx : cx*ci + i*sx + cx] = Ct
     
-    B_matrix = coo_matrix(M)
+    B_matrix = M.tocoo()
     
     return B_matrix
 
@@ -230,8 +305,8 @@ def make_Vd_matrix(models_dict, all_variances):
         waves = model.meas_lambdas.ordered_data()
         n_waves = len(waves)
         n_times = len(times)
-        Vd = np.zeros((n_models * n_times * n_waves, n_models * n_times * n_waves))
-    
+        
+        Vd = lil_matrix((n_models * n_times * n_waves, n_models * n_times * n_waves))
         S = convert(model.S)
         comp_vars = [k for k, v in variances.items() if k != 'device']
         S = S.loc[:, comp_vars]
@@ -247,18 +322,18 @@ def make_Vd_matrix(models_dict, all_variances):
             
         total_shape += Vd.shape[0]
         Vd_dict[name] = Vd
-    
+        
     if n_models > 1:
         
-        Vd_combined = np.zeros((total_shape, total_shape))
+        Vd_combined = lil_matrix((total_shape, total_shape))
         start_index = 0
         for model, Vd in Vd_dict.items():        
             Vd_combined[start_index:Vd.shape[0]+start_index, start_index:Vd.shape[1]+start_index] = Vd
             start_index = Vd.shape[0]
         
-        return coo_matrix(Vd_combined)
+        return Vd_combined.tocoo()
     
-    return coo_matrix(Vd)
+    return Vd.tocoo()
 
 
 def index_variable_mapping(model_dict, components, parameter_names, mee_obj=None, k_aug=False):
@@ -279,13 +354,38 @@ def index_variable_mapping(model_dict, components, parameter_names, mee_obj=None
     else:
         model_obj = model_dict
         
-    model_obj.red_hessian = Suffix(direction=Suffix.IMPORT_EXPORT)
+    if not hasattr(model_obj, 'red_hessian'):
+        model_obj.red_hessian = Suffix(direction=Suffix.IMPORT_EXPORT)
     index_to_variables = define_reduce_hess_order(model_dict, components, parameter_names, k_aug)
     
     for k, v in index_to_variables.items():
         model_obj.red_hessian[v] = k
         
     return index_to_variables
+
+
+def read_covariance_matrix_sipopt(temp_file, parameter_number):
+    """Generalize the covariance optimization with IPOPT Sens
+
+    :param ConcreteModel model: The Pyomo model used in parameter fitting
+    :param SolverFactory optimizer: The SolverFactory currently being used
+    :param bool tee: Display option
+    :param dict all_sigma_specified: The provided variances
+    :param mee_obj: An MEE instance, default None
+
+    :return hessian: The covariance matrix
+    :rtype: numpy.ndarray
+
+    """
+    from kipet.input_output.read_hessian import split_sipopt_string, read_reduce_hessian
+   
+    with open(temp_file, 'r') as f:
+        output_string = f.read()
+    
+    ipopt_output, hessian_output = split_sipopt_string(output_string)
+    covariance_matrix = read_reduce_hessian(hessian_output, parameter_number)
+    
+    return covariance_matrix
 
 
 def covariance_sipopt(model_obj, solver_factory, components, parameters, mee_obj=None):
@@ -301,11 +401,8 @@ def covariance_sipopt(model_obj, solver_factory, components, parameters, mee_obj
     :rtype: numpy.ndarray
 
     """
-    from kipet.input_output.read_hessian import split_sipopt_string, read_reduce_hessian
-            
-    _tmpfile = "ipopt_hess"
+    _tmpfile = "sipopt_red_hess"
     index_to_variable = index_variable_mapping(model_obj, components, parameters, mee_obj)
-    
     optimization_model = model_obj if mee_obj is None else mee_obj
     
     solver_results = solver_factory.solve(
@@ -316,152 +413,501 @@ def covariance_sipopt(model_obj, solver_factory, components, parameters, mee_obj
         symbolic_solver_labels=True,
         keepfiles=True)
     
-    with open(_tmpfile, 'r') as f:
-        output_string = f.read()
+    covariance_matrix = read_covariance_matrix_sipopt(_tmpfile, len(index_to_variable))
     
-    ipopt_output, hessian_output = split_sipopt_string(output_string)
-    covariance_matrix = read_reduce_hessian(hessian_output, len(index_to_variable))
-    covariance_matrix_reduced = covariance_matrix[-len(parameters):, :]
+    labels = [v.name for v in index_to_variable.values()]
+    covariance_matrix = pd.DataFrame(covariance_matrix, columns=labels, index=labels)
+    #print(f'{covariance_matrix = }')
+    covariance_matrix_reduced = covariance_matrix.loc[parameters, :]
+    #print(f'{covariance_matrix_reduced = }')
     
     return covariance_matrix, covariance_matrix_reduced
 
 
-def covariance_k_aug(model_obj, solver_factory, components, parameters, ncp=1, mee_obj=None):
-    """Generalize the covariance optimization with IPOPT Sens
-
-    :param ConcreteModel model: The Pyomo model used in parameter fitting
-    :param SolverFactory optimizer: The SolverFactory currently being used
-    :param bool tee: Display option
-    :param dict all_sigma_specified: The provided variances
-
-    :return hessian: The covariance matrix
-    :rtype: numpy.ndarray
-
-    """
-    _tmpfile = "k_aug_hess"
-    optimization_model = model_obj if mee_obj is None else mee_obj
-    add_warm_start_suffixes(optimization_model, use_k_aug=True) 
-    index_to_variable = index_variable_mapping(model_obj, components, parameters, mee_obj, k_aug=True)
+def covariance_kaug_direct(reaction_model, as_df=True):
+    """This returns the reduced Hessian via k_aug if 1 ncp is used
     
-    ip = SolverFactory('ipopt')
-    solver_results = ip.solve(
-        optimization_model,
+    """
+    # Set up the variables
+    model = reaction_model.p_model
+    ncp = reaction_model.settings.collocation.ncp
+    
+    if ncp != 1:
+        raise AttributeError('This method requires ncp = 1')
+    
+    k_aug = SolverFactory(solver_path('k_aug'))
+    ipopt = SolverFactory(solver_path('ipopt'))
+    components = reaction_model.p_estimator.comps['unknown_absorbance']
+    parameters = reaction_model.p_estimator.param_names_full
+    _tmpfile = "k_aug_hess"
+    
+    # Model preparation
+    add_warm_start_suffixes(model, use_k_aug=True) 
+    index_to_variable = index_variable_mapping(model, components, parameters, None, k_aug=True)
+    
+    # print(f'{components = }')
+    # print(f'{parameters = }')
+    # print(f'{index_to_variable = }')
+    
+    # Solve using IPOPT
+    solver_results = ipopt.solve(
+        model,
         tee=False,
         logfile=_tmpfile,
         report_timing=True,
         symbolic_solver_labels=True,
-        keepfiles=True
+        keepfiles=True,
         )
 
-    update_warm_start(optimization_model)
-    k_aug = SolverFactory('k_aug')
+    update_warm_start(model)
 
-    use_kkt = False
-    if ncp > 1:
-        use_kkt = True
-
-    if use_kkt:
-        k_aug.options["print_kkt"] = ""
-    else:
-        k_aug.options["compute_inv"] = ""
-
-    k_aug.solve(optimization_model, tee=False)
-
-    stub = ip._problem_files[0][:-3]
-    var_index_names, con_index_names = var_con_data(stub)
-    col_ind_dict, col_ind_param_hr = free_variables(model_obj, components, parameters, var_index_names)
-    #col_ind = list(col_ind_dict.values())
+    # Finish using k_aug
+    k_aug.options["compute_inv"] = ""
+    #k_aug.options["print_kkt"] = ""
+    k_aug.solve(model, tee=False)
+    kaug_files = Path('kaug_debug')
+    covariance_file = kaug_files.joinpath('result_red_hess.txt')
+    unordered_hessian = np.loadtxt(covariance_file)
+    var_loc = model.rh_name
     
-    if not use_kkt:
-        kaug_files = Path('kaug_debug')
-        covariance_file = kaug_files.joinpath('result_red_hess.txt')
-        unordered_hessian = np.loadtxt(covariance_file)
-        
-        var_loc = model_obj.rh_name
-        for v in index_to_variable.values():
-            try:
-                var_loc[v]
-            except:
-                var_loc[v] = 0
+    for v in index_to_variable.values():
+        try:
+            var_loc[v]
+        except:
+            var_loc[v] = 0
 
-        n_vars = len(index_to_variable)
-        hessian = np.zeros((n_vars, n_vars))
-        
-        for i, vi in enumerate(index_to_variable.values()):
-            for j, vj in enumerate(index_to_variable.values()):
-                if n_vars == 1:
-                    h = unordered_hessian
-                    hessian[i, j] = h
-                else:
-                    h = unordered_hessian[(var_loc[vi]), (var_loc[vj])]
-                    hessian[i, j] = h
-        # print(hessian.size, "hessian size")
-
-        # print(hessian)
-        covariance_matrix = hessian
-        
-        
+    n_vars = len(index_to_variable)
+    hessian = np.zeros((n_vars, n_vars))
+    
+    for i, vi in enumerate(index_to_variable.values()):
+        for j, vj in enumerate(index_to_variable.values()):
+            if n_vars == 1:
+                h = unordered_hessian
+                hessian[i, j] = h
+            else:
+                h = unordered_hessian[(var_loc[vi]), (var_loc[vj])]
+                hessian[i, j] = h
+    
+    covariance_matrix = hessian  
+    labels = [v.name for v in index_to_variable.values()]
+    covariance_matrix = pd.DataFrame(covariance_matrix, columns=labels, index=labels)
+    print(f'{covariance_matrix = }')
+    covariance_matrix_reduced = covariance_matrix.loc[parameters, :]
+    print(f'{covariance_matrix_reduced = }')
+    
+    return covariance_matrix, covariance_matrix_reduced
+    
+    
+def kkt_kaug(reaction_model, pyomo_model=False, nlp=None):
+    """Gets the KKT information using k_aug for a model solved using the 
+    Parameter Estimator
+    
+    """   
+    if pyomo_model:
+        model = reaction_model
     else:
-        size = (len(con_index_names), len(var_index_names))
-        covariance_matrix = calculate_inverse_hr(size, col_ind_dict, global_set=parameters)
-        # print(covariance_matrix)
+        model = reaction_model.p_model
+    
+    k_aug = SolverFactory(solver_path('k_aug'))
+    k_aug.options["print_kkt"] = ""
+    k_aug.solve(model, tee=False)
+    
+    if nlp is None:
+        nlp = reaction_model._nlp
+        
+    size = (nlp.n_constraints(), nlp.n_primals())
+    H, J, G = _build_raw_J_and_H(size)
+    K = bmat([[H, J.T],[J, None]], format='csc')
+    
+    return H, J, K
 
-    covariance_matrix_reduced = covariance_matrix[col_ind_param_hr, :]
 
+def reorder_rh_cov_matrix(reaction_model, df):
+    """Reorders the covariance or reduced Hessian matrix to have the parameters
+    in order from C to S to P
+    """
+    columns = spectral_hess_reorder(reaction_model)
+    df = df.reindex(columns, columns=columns)
+    
+    return df
+    
+def reduced_hessian_kaug(reaction_model):
+    """Convenience method for generating the reduced Hessian from k_aug
+    
+    """
+    ncp = reaction_model.settings.collocation.ncp
+    
+    if ncp > 1:
+        # This doesn't work for ncp > 1 at the moment
+        rh = reduced_hessian_single_model(reaction_model, use_k_aug=False)
+    else:
+        cov, cov_reduced = covariance_kaug_direct(reaction_model)
+        rh = np.linalg.inv(cov)
+        rh = pd.DataFrame(rh, labels=cov.labels, index=cov.index)
+        
+    return rh
+
+
+def covariance_k_aug(reaction_model):
+    """Returns the covariance method using k_aug after a model has been solved
+    
+    """
+    ncp = reaction_model.settings.collocation.ncp
+    
+    if ncp > 1:
+        rh = reduced_hessian_single_model(reaction_model, use_k_aug=False)
+        rh = reorder_rh_cov_matrix(reaction_model, rh)
+        cov = np.linalg.inv(rh)
+        covariance_matrix = pd.DataFrame(cov, columns=rh.columns, index=rh.index)
+        col_ind_P, col_ind_param_hr = new_free_variables(reaction_model)
+        covariance_matrix_reduced = covariance_matrix.loc[list(col_ind_P.keys()), :]
+    else:
+        covariance_matrix, covariance_matrix_reduced = covariance_kaug_direct(reaction_model)
+        
     return covariance_matrix, covariance_matrix_reduced
 
+    
+# def kkt_pynumero(reaction_model, nlp_object=None):
+    
+#     dummy_constraints = []
+#     dummy_vars = []
+#     if hasattr(reaction_model.p_model, 'fix_params_to_global'):
+#         dummy_constraints = [v for v in getattr(reaction_model.p_model, 'fix_params_to_global').values()]
+#         dummy_vars = [id(v) for v in getattr(reaction_model.p_model, 'd').values()]
+#     attr_dict = {}
+#     attr_dict['varList'] = [v for v in nlp.get_pyomo_variables() if id(v) not in dummy_vars]
+#     attr_dict['conList'] = nlp.get_pyomo_constraints()
+#     attr_dict['conList_red'] = [v for v in attr_dict['conList'] if v not in dummy_constraints]
+    
+#     J = nlp.extract_submatrix_jacobian(pyomo_variables=attr_dict['varList'], pyomo_constraints=attr_dict['conList_red'])
+#     H = nlp.extract_submatrix_hessian_lag(pyomo_variables_rows=attr_dict['varList'], pyomo_variables_cols=attr_dict['varList'])
 
-def var_con_data(file_stub):
-    """
-    This prepares the indecies and sizes for the reduced Hessian strucuturing.
-    
-    The variables are arranged such that the parameters need to be in the right order
-    and entered in last (for k_aug).
-    
-    The commented code lets you place the variables in any order, as long as they are
-    still located at the end (important for B and Vd matrix building.)
-    
-    """
-    var_index = pd.read_csv(Path(file_stub + '.col'), sep=';', header=None)  # dummy sep
-    con_index = pd.read_csv(Path(file_stub + '.row'), sep=';', header=None)  # dummy sep
-    var_index_names = [var_name for var_name in var_index[0]]
-    con_index_names = [con_name for con_name in con_index[0].iloc[:-1]]
+#     ## Construct KKT matrix
+#     K = bmat([[H, J.T],[J, None]], format='csc')
 
-    #print(f'{con_index_names = }')
-    
-    return var_index_names, con_index_names
+#     # if self.inertia_correction:
+#     #   K = inertia_correction(K)
+
+#     return H, J, K
 
 
-def free_variables(model, components, parameters, var_index_names): 
-    """
-    This prepares the indecies and sizes for the reduced Hessian strucuturing.
-    
-    The variables are arranged such that the parameters need to be in the right order
-    and entered in last (for k_aug).
-    
-    The commented code lets you place the variables in any order, as long as they are
-    still located at the end (important for B and Vd matrix building.)
+def build_E_matrix(nlp, mdict):
+    """Builds the E matrix (see NSD theory) that places a one at aligned with
+    the parameter and the dummy constraint in the full KKT matrix
     
     """
-    spectral_vars = []
+    _J_dum = nlp.extract_submatrix_jacobian(pyomo_variables=mdict['varList'], pyomo_constraints=mdict['conList_dummy'])
+    _z = coo_matrix((len(mdict['conList_red']), len(mdict['conList_dummy'])))
+    E = vstack([_J_dum.T, _z], format='csc')
     
-    # print(f'{parameters = }')
-    # parameters = ['P[k1]']
+    return E
+
+
+def kkt_pynumero_nlp(nlp, mdict, use_cyipopt=False, index_list=None):
+    """Builds the KKT matrix using PyomoNLP object
     
-    if components is not None:
-        if hasattr(model, 'C') and hasattr(model, 'S'):
-            for var in ['C', 'S']:
-                spectral_vars += [f'{var}[{k[0]},{k[1]}]' for k in getattr(model, var) if k[1] in components]
+    """
+    J = nlp.extract_submatrix_jacobian(pyomo_variables=mdict['varList'], pyomo_constraints=mdict['conList_red'])
+    H = nlp.extract_submatrix_hessian_lag(pyomo_variables_rows=mdict['varList'], pyomo_variables_cols=mdict['varList'])
+    K = bmat([[H, J.T],[J, None]], format='csc')
+
+    # if use_inertia_correction:
+        # K = inertia_correction(K)
+
+    return H, J, K
+
+    
+def kkt_pynumero_projected_nlp(nlp, index_list=None):
+    """Builds the KKT matrix from a ProjectedNLP object
+    
+    """
+    use_cyipopt=True
+    H, J, grad = build_matrices(nlp, index_list[0], use_cyipopt=use_cyipopt)
+    J_c = delete_from_csr(J.tocsr(), row_indices=index_list[2]).tocsc()
+    J = J_c
+    K = bmat([[H, J.T],[J, None]], format='csc')
+    
+    # if use_inertia_correction:
+        # K = inertia_correction(K)
+
+    return H, J, K
+
+
+def reduced_hessian_from_full_kkt(K, E, labels=None):
+    """Solves the system of equations for the matrix S
+    
+    """
+    lhs = bmat([[K, E],[E.T, None]], format='csc')
+    G = np.eye(E.shape[1])
+    _z = csc_matrix((K.shape[1], G.shape[1]))
+    rhs = vstack([_z, -G], format='csc') 
+    QS = spsolve(lhs, rhs).tolil()
+    S = QS[-E.shape[1]:, :]
+    rh = np.asarray(S.todense())
+    
+    if labels is not None:
+        rh = pd.DataFrame(rh, columns=labels, index=labels)
+
+    return rh
+
+
+def evaluate_gradient(nlp, mdict, index_list, use_cyipopt=False):
+    """Return the multipliers for the dummy constraints (m in NSD theory)
+    
+    """
+    m = 0
+    global_param_index, _, dummy_con_index = index_list
+    duals = nlp.n_constraints()*[0.0]
+    
+    if not use_cyipopt:
+        model = nlp.pyomo_model()
+        for index, con in zip(dummy_con_index, mdict['conList_dummy']):
+            duals[index] = model.dual[con]
+    else:
+    
+        duals = nlp.get_duals()
+        # for index, con in zip(dummy_con_index, mdict['conList_dummy']):
+        #     duals[index] = nlp.get_duals()[index]
+        
+    m += np.array(duals)
+    return m
+
+
+# def var_con_data(file_stub):
+#     """
+#     This prepares the indecies and sizes for the reduced Hessian strucuturing.
+    
+#     The variables are arranged such that the parameters need to be in the right order
+#     and entered in last (for k_aug).
+    
+#     The commented code lets you place the variables in any order, as long as they are
+#     still located at the end (important for B and Vd matrix building.)
+    
+#     """
+
+#     var_index = pd.read_csv(Path(file_stub + '.col'), sep=';', header=None)  # dummy sep
+#     con_index = pd.read_csv(Path(file_stub + '.row'), sep=';', header=None)  # dummy sep
+#     var_index_names = [var_name for var_name in var_index[0]]
+#     con_index_names = [con_name for con_name in con_index[0].iloc[:-1]]
+    
+#     return var_index_names, con_index_names
+    
+
+# def var_con_data_pynumero(pynumero_object):
+    
+#     varList = pynumero_object.get_pyomo_variables()
+#     conList = pynumero_object.get_pyomo_constraints()
+#     duals = pynumero_object.get_duals()
+
+#     J = pynumero_object.extract_submatrix_jacobian(pyomo_variables=varList, pyomo_constraints=conList)
+#     H = pynumero_object.extract_submatrix_hessian_lag(pyomo_variables_rows=varList, pyomo_variables_cols=varList)
+#     J = csc_matrix(J)
+
+#     var_index_names = [v.name for v in varList]
+#     con_index_names = [v.name for v in conList]
+
+#     grad = None
+
+#     return H, J, grad, var_index_names, con_index_names, duals
+
+
+# def free_variables2(model, components, parameters, nlp, global_parameters=None): 
+#     """
+#     This prepares the indecies and sizes for the reduced Hessian strucuturing.
+    
+#     The variables are arranged such that the parameters need to be in the right order
+#     and entered in last (for k_aug).
+    
+#     The commented code lets you place the variables in any order, as long as they are
+#     still located at the end (important for B and Vd matrix building.)
+    
+#     New version uses indicies instead of primals_names
+    
+#     """
+#     #%%
+#     # nlp = r1._nlp
+#     # model = r1.p_model
+#     # components = r1.p_estimator.comps['unknown_absorbance']
+#     # import time  
+    
+#     # s1 = time.time()
+#     # an = nlp.primals_names()
+#     # e1 = time.time()
+    
+#     # print(f'primals_names() takes {e1 - s1} s')
+    
+    
+#     # from pyomo.environ import Var
+#     # # import pdb; pdb.set_trace()
+#     # s2 = time.time()
+#     # list_of_vars = nlp.pyomo_model().component_map(Var)
+#     # primals_names = []
+#     # for var in list_of_vars:
+#     #     var_obj = getattr(model, var)
+#     #     for c, obj in var_obj.items():
+#     #         if obj.fixed or obj.stale:
+#     #             continue
+#     #         if isinstance(c, tuple):
+#     #             primals_names.append(f'{var}[{",".join(list(map(str, c)))}]') # = nlp.get_primal_indices([obj])[0]
+#     #         else:
+#     #             primals_names.append(f'{var}[{c}]')
+#     # e2 = time.time()
+    
+#     # print(f'other method takes {e2 - s2} s')
+    
+#     # primals_new = sorted(primals_names)
+#     # primals_old = sorted(an)
+    
+#     # assert(primals_new == primals_old)
+        
+    
+#     #def _build_var_dict(self, params=[], init=False):
+        
+#     #%%
+#     # nlp = r1._nlp
+#     # model = r1.p_model
+#     # components = r1.p_estimator.comps['unknown_absorbance']
+#     from kipet.general_settings.variable_names import VariableNames
+#     __var = VariableNames()
+        
+#     params = []
+#     from collections import namedtuple
+#     #print(f'{params = }')
+#     P_var = namedtuple('P_var', ('name', 'full_name', 'model_var', 'pyomo_var'))
+#     var_objs = {}
+    
+#     counter = 0
+#     col_ind_param_hr = []
+    
+#     for opt_var in __var.optimization_variables_spectral:
+#         if hasattr(model, opt_var):
+#             for k, v in getattr(model, opt_var).items():
+#                 #print(f'{k = }')
+#                 if v.fixed or v.stale or k in params:
+#                     # print(f'In set: {k in params}')
+#                     # print(f'Is fix: {v.fixed}')
+#                     # print(f'Is old: {v.stale}')
+#                     counter += 1
+#                     continue
+#                 else:
+#                     if isinstance(k, tuple):
+#                         full_name = f'{opt_var}[{",".join(list(map(str, k)))}]'
+#                     else:
+#                         full_name = f'{opt_var}[{k}]'
+                    
+#                     p_var = P_var(k, full_name, opt_var, v)
+#                     var_objs[p_var.name] = p_var
+                    
+#                     if opt_var in __var.optimization_variables:
+#                         col_ind_param_hr.append(counter)
+                    
+#                     counter += 1
+
+#     col_ind_dict = {p.full_name: nlp.get_primal_indices([p.pyomo_var])[0] for p in var_objs.values()}
+    
+#     # for opt_var in __var.optimization_variables:
+#     #     if hasattr(model, opt_var):
+#     #         for k, v in getattr(model, opt_var).items():
+#     #             print(k, v)
+#     #             col_ind_param_hr.append(col_ind_dict[var_objs[k].full_name])
+        
+#     print(f'{col_ind_param_hr = }')
+#     print(f'{len(col_ind_dict) = }')
+#     #print(col_ind_dict['S[1930.0,A]'])
+#     #col_ind_dict_nlp = dict(zip(nlp.primals_names(), nlp.get_primal_indices(nlp.get_pyomo_variables())))
+    
+#     # var_name = 'P'
+#     # p_vars = getattr(model, var_name)
+#     # col_ind_dict = {f'{var_name}[{p}]': nlp.get_primal_indices([obj])[0] for p, obj in p_vars.items() if not obj.fixed}
+    
+#     # var_name = 'C'
+#     # c_vars = getattr(model, var_name)
+#     # for c, obj in c_vars.items():
+#     #     if c[1] not in components or obj.fixed:
+#     #         continue
+#     #     col_ind_dict[f'{var_name}[{c}]'] = nlp.get_primal_indices([obj])[0]
+        
+#     # var_name = 'S'
+#     # c_vars = getattr(model, var_name)
+#     # for c, obj in c_vars.items():
+#     #     if c[1] not in components or obj.fixed:
+#     #         continue
+#     #     col_ind_dict[f'{var_name}[{c}]'] = nlp.get_primal_indices([obj])[0]
+    
+    
+    
+    
+#     #%%
+#     #col_ind_dict = {v: var_index_names.index(v) for v in spectral_vars + parameters}
+#     # print(f'{col_ind_dict = }')
+#     # col_ind = col_ind_dict.values()
+#     # col_ind = [var_index_names.index(v) for v in spectral_vars + parameters]
+#     # col_ind_P = [var_index_names.index(name) for name in parameters]# if not getattr(model, 'P')[name].fixed]
+#     # #print(f'{var_index_names = }')
+#     # col_ind_param_hr = [1,2] #[col_ind.index(p) for p in col_ind_P]
+    
+#     return col_ind_dict, col_ind_param_hr
+
+
+
+# def free_variables(model, components, parameters, var_index_names, global_parameters=None): 
+#     """
+#     This prepares the indecies and sizes for the reduced Hessian strucuturing.
+    
+#     The variables are arranged such that the parameters need to be in the right order
+#     and entered in last (for k_aug).
+    
+#     The commented code lets you place the variables in any order, as long as they are
+#     still located at the end (important for B and Vd matrix building.)
+    
+#     """
+#     spectral_vars = []
+    
+#     print(f'{parameters = }')
+#     # parameters = ['P[k1]']
+    
+#     if components is not None:
+#         if hasattr(model, 'C') and hasattr(model, 'S'):
+#             for var in ['C', 'S']:
+#                 spectral_vars += [f'{var}[{k[0]},{k[1]}]' for k in getattr(model, var) if k[1] in components]
                 
-    col_ind_dict = {v: var_index_names.index(v) for v in spectral_vars + parameters}
-    # print(f'{col_ind_dict = }')
+#     #print(f'{parameters = }')
+#     col_ind_dict = {v: var_index_names.index(v) for v in spectral_vars + parameters}
+#     print(f'{col_ind_dict = }')
     
-    col_ind = [var_index_names.index(v) for v in spectral_vars + parameters]
-    col_ind_P = [var_index_names.index(name) for name in parameters]
-    #print(f'{var_index_names = }')
-    col_ind_param_hr = [col_ind.index(p) for p in col_ind_P]
+#     col_ind = [var_index_names.index(v) for v in spectral_vars + parameters]
+#     col_ind_P = [var_index_names.index(name) for name in parameters]# if not getattr(model, 'P')[name].fixed]
+#     print(f'{var_index_names = }')
+#     print(f'{len(var_index_names) = }')
+#     col_ind_param_hr = [col_ind.index(p) for p in col_ind_P]
+#     print(f'{col_ind_param_hr = }')
     
-    return col_ind_dict, col_ind_param_hr
+#     return col_ind_dict, col_ind_param_hr
+
+
+def new_free_variables(reaction_model):
+    
+    """
+    This uses pynumero instead to find the index of the vars instead of needing to provide a bunch of info
+    """
+    nlp = reaction_model._nlp
+    var_dict = {n.name: n for n in nlp.get_pyomo_variables()}
+    var_index = {n.name : nlp.get_primal_indices([n])[0] for n in var_dict.values()}
+    
+    spectral_vars = []
+    if hasattr(nlp.pyomo_model(), 'C') and hasattr(nlp.pyomo_model(), 'S'):
+        for var in ['C', 'S']:
+            spectral_vars += [v.local_name for k, v in var_dict.items() if v.parent_component().name == var and v.index()[1] in reaction_model.components.get_match('absorbing', True)]
+    
+    from kipet.general_settings.variable_names import VariableNames
+    __var = VariableNames()
+    parameters = [v.local_name for k, v in var_dict.items() if v.parent_component().name in __var.optimization_variables]
+    
+    col_ind = [var_index[v] for v in spectral_vars + parameters]
+    col_ind_P = {v: var_index[v] for v in parameters}
+    col_ind_param_hr = [col_ind.index(p) for p in col_ind_P.values()]
+
+    return col_ind_P, col_ind_param_hr
 
 
 def _build_raw_J_and_H(size):
@@ -476,55 +922,73 @@ def _build_raw_J_and_H(size):
     m, n = size
     kaug_files = Path('GJH')
     
+    kkt_file = kaug_files.joinpath('kkt_print.txt')
+    kkt = pd.read_csv(kkt_file, delim_whitespace=True, header=None, skipinitialspace=True)
+    kkt.columns = ['irow', 'jcol', 'vals']
+    kkt['irow'] -= 1
+    kkt['jcol'] -= 1
+    
     hess_file = kaug_files.joinpath('H_print.txt')
     hess = pd.read_csv(hess_file, delim_whitespace=True, header=None, skipinitialspace=True)
     hess.columns = ['irow', 'jcol', 'vals']
-    hess.irow -= 1
-    hess.jcol -= 1
+    hess['irow'] -= 1
+    hess['jcol'] -= 1
 
     jac_file = kaug_files.joinpath('A_print.txt')
     jac = pd.read_csv(jac_file, delim_whitespace=True, header=None, skipinitialspace=True)
     jac.columns = ['irow', 'jcol', 'vals']
-    jac.irow -= 1
-    jac.jcol -= 1
-    
+    jac['irow'] -= 1
+    jac['jcol'] -= 1
+
     grad_file = kaug_files.joinpath('gradient_f_print.txt')
     grad = pd.read_csv(grad_file, delim_whitespace=True, header=None, skipinitialspace=True)
     grad.columns = ['gradient']
-    # grad.columns = ['irow', 'jcol', 'vals']
-    # grad.irow -= 1
-    # grad.jcol -= 1
-    
-    # print(f'{grad = }')
     
     J = coo_matrix((jac.vals, (jac.jcol, jac.irow)), shape=(m, n))
     Hess_coo = coo_matrix((hess.vals, (hess.irow, hess.jcol)), shape=(n, n))
     H = Hess_coo + triu(Hess_coo, 1).T
-    
-    #grad = coo_matrix((grad.vals (grad.jcol, grad.irow)), shape=(n, 1))
+    #K = coo_matrix((kkt.vals, (kkt.jcol, kkt.irow)), shape=(m + n, m + n))
     
     return H, J, grad
+        
 
-def _build_reduced_hessian(size, col_ind, con_ind=None, parameter_set=[], 
-                           global_set=[], delete_fixed_constraints=False):
+def _build_reduced_hessian(size, 
+                           col_ind, 
+                           con_ind=None, 
+                           parameter_set=[], 
+                           global_set=[], 
+                           delete_fixed_constraints=False,
+                           matrices=None):
     
     """Constructs the reduced Hessian used in various methods.
     
     """
     #print(f'{size = }')
     
-    H, J, grad = _build_raw_J_and_H(size)
-
-    # print(f'{J.shape = }')
-    # print(f'{H.shape = }')
-    # print(f'{parameter_set = }')
-    # print(f'{global_set = }')
-
+    print(f'\n\nTHIS IS THE RED HS\n\n')
     
+    if matrices is None:
+        H, J, grad = _build_raw_J_and_H(size)
+    else:
+        #print('mats provides' + '$'*70)
+        H, J, grad = matrices
+
+    print(f'{J.shape = }')
+    print(f'{H.shape = }')
+    print(f'{parameter_set = }')
+    print(f'BRH {global_set = }')
+
+    #col_ind = {'P[k1]': 1794}
     local_set = list(set(parameter_set).difference(set(global_set)))
-    #print(f'{local_set = }')
+    # print(f'{local_set = }')
 
     if delete_fixed_constraints:
+        
+        # print(f'{global_set = }')
+        #print(f'{con_ind[-2:] = }')
+        # # print(f'{len(con_ind) = }')
+        print(f'{global_set = }')
+        
         dummy_constraints = [f'fix_params_to_global[{k}]' for k in global_set]
         
         jac_row_ind = [con_ind.index(d) for d in dummy_constraints]
@@ -532,12 +996,12 @@ def _build_reduced_hessian(size, col_ind, con_ind=None, parameter_set=[],
         # print(f'{len(col_ind) = }')
         
         # print(f'{jac_row_ind = }')
-        # print(f'{col_ind = }')
+        print(f'{col_ind = }')
         
         col_ind_local = [v for k, v in col_ind.items() if k.lstrip('P[').rstrip(']') in local_set]
         col_ind_global = [v for k, v in col_ind.items() if k.lstrip('P[').rstrip(']') not in local_set]
 
-        # print(f'{col_ind_local = }')
+        print(f'{col_ind_local = }')
         # print(f'{col_ind_global = }')
 
         J_c = delete_from_csr(J.tocsr(), row_indices=jac_row_ind).tocsc()
@@ -545,30 +1009,93 @@ def _build_reduced_hessian(size, col_ind, con_ind=None, parameter_set=[],
         J_f = row_indexer[col_ind_global].T
         # print(f'{J_f = }')
 
-        # print(f'{J_c.shape = }')
-        # print(f'{J_f.shape = }')
-        
+        print(f'{J_c.shape = }')
+        print(f'{J_f.shape = }')
         J_l = delete_from_csr(J_c.tocsr(), col_indices=col_ind_local + col_ind_global)
-        # print(f'{J_l.shape = }')
+        print(f'{J_l.shape = }')
     
     else:
-        # print(f'{col_ind = }')
+        # print(f'{col_ind["P[k1]"] = }')
         J_c = J.tocsc()
         row_indexer = SparseRowIndexer(J_c.T)
         J_f = row_indexer[[v for v in col_ind.values()]].T
         J_l = delete_from_csr(J_c.tocsr(), col_indices=col_ind.values())
         
+        print(f'{J_c.shape = }')
+        print(f'{J_f.shape = }')
+        print(f'{J_l.shape = }')
+        
     #col_ind_global = [300, 301]
-    grad = grad.loc[col_ind_global].values
+    #grad = grad.loc[col_ind_global].values
     # print(f'{grad = }')
-    
+    # print(f'{global_set = }')
     n_free = len(global_set)
+    jf = pd.DataFrame(J_f.todense())
+    jl = pd.DataFrame(J_l.todense())
+    
+    
+    from scipy.sparse import csc_matrix
+    # Hc = csc_matrix(H)
+    # for i, j in zip(*Hc.nonzero()):
+        # print(f'({i}, {j}), {hd[i,j]})')
+        
+    
+    # Hc = csc_matrix(J_f)
+    # hd = J_f.todense()
+    # for i, j in zip(*Hc.nonzero()):
+    #     print(f'({i}, {j}), {hd[i,j]})')
+    # print(f'{J_f = }')
+    # print(f'{J_l = }')
+    
+    #%%
+    # a = csc_matrix(H)
+    
+    # df = pd.DataFrame()
+    # rows = a.nonzero()[0]
+    # cols = a.nonzero()[1]
+    
+    # df['cols'] = cols
+    # df['rows'] = rows
+    
+    # vals = []
+    # for i in range(len(cols)):
+    #     vals.append(a[rows[i], cols[i]])
+        
+    # df['vals'] = vals
+    
+    # df.to_csv('csc_H.csv')
+    
+    
+    
+    
+    #%%
+    
+    
+    # jf.to_csv('k_aug_jf.csv')
+    # jl.to_csv('k_aug_jl.csv')
+    
+    # print(f'{jf = }')
+    # print(f'{jl = }')
+    print(f'{H.shape = }')
+    #print(f'{col_ind = }')
+    
+    h = H.todense()
+    #print(f'{h[300:302,300:302] = }')
+    
     reduced_hessian, Z_mat = _reduced_hessian_matrix(J_f, J_l, H, col_ind, n_free)
+
+    print(f'{reduced_hessian.shape = }')
+
+    #"In testing use this
+
+    #print(f'{reduced_hessian = }')
+
+    #"
 
     # if not gradients:
     #     return reduced_hessian
     # else:
-    return reduced_hessian, grad
+    return reduced_hessian, grad, Z_mat, H
 
 def _reduced_hessian_matrix(F, L, H, col_ind, n_free):
     """This calculates the reduced hessian by calculating the null-space based
@@ -585,58 +1112,128 @@ def _reduced_hessian_matrix(F, L, H, col_ind, n_free):
     """
     from scipy.sparse.linalg import spsolve
     
-    n = H.shape[0]
-    #n_free = n - F.shape[0]
-    #n_free = len(col_ind)
-    col_ind_vals = [v for v in col_ind.values()]
-    # print(f'{col_ind = }')
+    print(type(col_ind))
+    #print(len(col_ind)
     
-    # print(f'{n = }')
+    if isinstance(col_ind, list):
+        col_ind_dict = col_ind[0]
+        col_ind_global = [v for v in col_ind[0].values()]
+        col_ind_local = [v for v in col_ind[1].values()]
+    else:
+        col_ind_dict = col_ind
+        col_ind_global = [v for v in col_ind.values()]
+        col_ind_local = []
+    
+    n = H.shape[0]
+    
+    # This is needed for C and S
+    n_free = n - F.shape[0] - len(col_ind_local)
+    
+    print(f'{n_free = }')
+    
+    
+    
+    #col_ind = {'P[k1]': 1794}
+    
+    #n_free = len(col_ind)
+    
+    #col_ind_vals = [v for v in col_ind.values()]
+    # print(f'{col_ind = }')
     # print(f'{n_free = }')
+    
+    #print(f'{n = }')
+    #print(f'{n_free = }')
     # print(f'{F = }')
     # print(f'{L = }')
-    X = spsolve(L.tocsc(), -F.tocsc())
-
-    # print(f'{X.shape = }')
-    # print(f'{X = }')
     
+    
+    # You need to get the correct values for the H and J here! Figure out what
+    # needs to be done with the local variables! Write this down!
 
-    col_ind_left = list(set(range(n)).difference(set(col_ind_vals)))
+    col_ind_left = list(set(range(n)).difference(set(col_ind_global)).difference(set(col_ind_local)))
     col_ind_left.sort()
     
-    # print(f'{len(col_ind_left) = }')
+    print(f'{len(col_ind_left) = }')
+    #print(f'{n_free = }')
     
+    #n_free = 1
     Z = np.zeros([n, n_free])
-    # print(f'{Z.shape = }')
-    Z[col_ind_vals, :] = np.eye(n_free)
+    print(f'{Z.shape = }')
+    #print(f'{col_ind_vals = }')
+    #print(len(col_ind_vals))
+    
+    # Eror occurs here ValueError: shape mismatch: value array of shape (2,2) 
+    # could not be broadcast to indexing result of shape (1202,2)
+    
+    # print(f'{col_ind_vals = }')
+    
+    print(f'{len(col_ind_global) = }')
+    print(f'{len(col_ind_local) = }')
+    
+    Z[col_ind_global, :] = np.eye(n_free)
+    Z[col_ind_local, :] = np.zeros((len(col_ind_local), n_free))
+
+    X = spsolve(L.tocsc(), -F.tocsc())
+
+    print(f'{X.shape = }')
+    print(f'{X = }')
 
     if isinstance(X, csc_matrix):
         Z[col_ind_left, :] = X.todense()
     else:
         Z[col_ind_left, :] = X.reshape(-1, 1)
 
-    # print(f'{Z = }')
+    #print(f'{Z = }')
 
     Z_mat = coo_matrix(np.mat(Z)).tocsr()
     Z_mat_T = coo_matrix(np.mat(Z).T).tocsr()
     Hess = H.tocsr()
     reduced_hessian = Z_mat_T * Hess * Z_mat
 
-    return reduced_hessian.todense(), Z_mat
+    # print()
+    # print('%' * 100)
+    # print(f'{type(reduced_hessian) = }')
+    # print('%' * 100)
+
+    # print(f'{reduced_hessian.todense() = }')
+
+    labels = [p for p in col_ind_dict.keys()]
+    #print(f'{labels = }')
+
+    df_rh = pd.DataFrame(reduced_hessian.todense(), columns=labels, index=labels)
+    
+    #print(f'{df_rh = }')
+
+    return df_rh, Z_mat
+
+    #return reduced_hessian.todense(), Z_mat
 
 
-def calculate_inverse_hr(size, col_ind, global_set=[]):
-    """Calculates the inverse of the reduced Hessian using KKT info (k_aug)
+# def calculate_inverse_hr(size, col_ind, global_set=[], matrices=None, spectral=True):
+#     """Calculates the inverse of the reduced Hessian using KKT info (k_aug)
     
-    :return H_use: The inverse of the reduced Hessian (parameter rows) 
-    :rtype: numpy.ndarray
+#     :return H_use: The inverse of the reduced Hessian (parameter rows) 
+#     :rtype: numpy.ndarray
     
-    """
+#     """
+#     reduced_hessian, grad, Z, H = _build_reduced_hessian(size, col_ind, global_set=global_set, matrices=matrices)
+#     covariance_matrix = np.linalg.inv(reduced_hessian)
+#     df_covariance_matrix = pd.DataFrame(covariance_matrix, columns=reduced_hessian.columns, index=reduced_hessian.index)
+#     labels = ['P[k1]', 'P[k2]']
     
-    reduced_hessian = _build_reduced_hessian(size, col_ind, global_set=global_set)
-    inv_H_r = np.linalg.inv(reduced_hessian)
+#     covariance_matrix_reduced = covariance_matrix
+#     if spectral:
+#         df_covariance_matrix_reduced = df_covariance_matrix.loc[labels, :]
+#         covariance_matrix_reduced = df_covariance_matrix_reduced.values
     
-    return inv_H_r
+#     #if not as_df:
+#     #    return covariance_matrix, covariance_matrix_reduced
+#     #else:
+#     #    return df_covariance_matrix, df_covariance_matrix_reduced
+#     df_covariance_matrix.to_csv('cov_mat_full_kaug')
+    
+    
+#     return covariance_matrix, Z
     
 def get_duals_k_aug(model_object, constraint_name, param_name):
     
@@ -654,19 +1251,21 @@ def add_warm_start_suffixes(model, use_k_aug=False):
     :return: None
 
     """
-    # Ipopt bound multipliers (obtained from solution)
-    model.ipopt_zL_out = Suffix(direction=Suffix.IMPORT)
-    model.ipopt_zU_out = Suffix(direction=Suffix.IMPORT)
-    # Ipopt bound multipliers (sent to solver)
-    model.ipopt_zL_in = Suffix(direction=Suffix.EXPORT)
-    model.ipopt_zU_in = Suffix(direction=Suffix.EXPORT)
-    # Obtain dual solutions from first solve and send to warm start
-    model.dual = Suffix(direction=Suffix.IMPORT_EXPORT)
-    
     if use_k_aug:
-        model.dof_v = Suffix(direction=Suffix.EXPORT)
-        model.rh_name = Suffix(direction=Suffix.IMPORT)
-        
+        if not hasattr(model, 'dof_v'):
+            model.dof_v = Suffix(direction=Suffix.EXPORT)
+        if not hasattr(model, 'rh_name'):
+            model.rh_name = Suffix(direction=Suffix.IMPORT)
+    else:
+        # Ipopt bound multipliers (obtained from solution)
+        model.ipopt_zL_out = Suffix(direction=Suffix.IMPORT)
+        model.ipopt_zU_out = Suffix(direction=Suffix.IMPORT)
+        # Ipopt bound multipliers (sent to solver)
+        model.ipopt_zL_in = Suffix(direction=Suffix.EXPORT)
+        model.ipopt_zU_in = Suffix(direction=Suffix.EXPORT)
+        # Obtain dual solutions from first solve and send to warm start
+        model.dual = Suffix(direction=Suffix.IMPORT_EXPORT)
+    
     return None
 
         
@@ -683,198 +1282,409 @@ def update_warm_start(model):
     
     return None
 
+def build_matrices(nlp_object, global_param_index, use_cyipopt=True, use_sigma=True):
+    """Method to build the H, J, and G matrices/vectors
+    
+    Unfortunately, the H calculated using the cyipopt method is different
+    """
+    if use_cyipopt:
+    
+        # print(f'{nlp_object.get_obj_scaling() = }')
+        # print(f'{nlp_object.get_obj_factor() = }') 
+    
+        h_raw = nlp_object.evaluate_hessian_lag().tolil()
+        # if nlp_object.get_obj_factor() != 1:
+        #     factor = nlp_object.get_obj_factor()
+        #     if factor == 0:
+        #         factor = 1
+        #     h_raw.setdiag(h_raw.diagonal()/factor)
 
-def calculate_reduced_hessian(model, d=None, optimize=False, parameter_set=[],
-                              fix_method=None, rho=10, scaled=True, 
-                              stub=None, return_duals=False,
-                              global_set=None, gradients=True):
-    
-    # print('IN CRH')
-    # print(f'{global_set = }')
-    # print(f'{parameter_set = }')
-    #parameter_set = ['k1', 'k2']
-    #global_set = ['k1']
-    
-    if global_set is None:
-        global_set = parameter_set
-    # print(f'{global_set = }')
-    
-    _stub = stub
-    if optimize or not optimize and stub is None:
-        #print('# Rreduced Hessian Method: Optimizing the model')
-        _stub = optimize_model(model, 
-                              parameter_set=parameter_set, 
-                              d=d,
-                              fix_method=fix_method,
-                              rho=rho,
-                              scaled=scaled,
-                              global_parameters=global_set)
-    
-    # print(f'{_stub = }')
-    
-    parameter_set_full = define_free_parameters(model, global_params=global_set, kind='full')
-    var_index_names, con_index_names = var_con_data(_stub)
-    size = (len(con_index_names), len(var_index_names))
-    # print(f'{size =}')
-    # print(f'{parameter_set_full = }')
-    col_ind_dict, col_ind_param_hr = free_variables(model, None, parameter_set_full, var_index_names)
-    
-    col_ind = list(col_ind_dict.values())
-    
-    # print(f'{col_ind = }')
-    
-    duals = []
-    if return_duals:
-        duals = get_duals_k_aug(model, 'fix_params_to_global', 'd')
-        #return duals
-    
-    delete_fixed_constraints = fix_method == 'global'
-    # if not gradients:
-    #     reduced_hessian = _build_reduced_hessian(size, col_ind_dict, con_index_names, parameter_set, global_set, delete_fixed_constraints)
-    #     grad = None
-    # else:
-    reduced_hessian, grad = _build_reduced_hessian(size, col_ind_dict, con_index_names, parameter_set, global_set, delete_fixed_constraints)
-    
-    if stub is not None:
-        return reduced_hessian
+        # # These need to be checked for S variables! (after they work with SolverFactory)
+        h_raw[global_param_index, :] *= -1
+        h_raw[:, global_param_index] *= -1
+        H = h_raw.tocoo()
+        #H = nlp_object.evaluate_hessian_lag()
+        
     else:
-        return reduced_hessian, _stub, duals, grad
+        H = nlp_object.evaluate_hessian_lag()
+        
+    # if use_sigma:
+    #     H = bounds_modification_nlp(nlp_object, H, global_param_index)
+        
+    J = nlp_object.evaluate_jacobian()
+    G = nlp_object.evaluate_grad_objective()
 
-def optimize_model(model, parameter_set=[], d=None, verbose=False, fix_method='fixed',
-                    use_bounds=False, variable_name='P', rho=10, scaled=True,
-                    global_parameters=[]):
-    """Takes the model object and performs the optimization for a reduced Hessian problem.
+    return H, J, G
+
+
+def bounds_modification_nlp(nlp_object, H, global_param_index):
+
+    bound_relax_factor = 1e-8 
+    eps = np.finfo(float).eps
+    #print('Adding Sigmas')
     
-    :param dict d: The current state of the parameters
+    if isinstance(nlp_object, PyomoNLP):
+        model = nlp_object.pyomo_model()
+        varList = nlp_object.get_pyomo_variables()
+    elif isinstance(nlp_object, ProjectedNLP):
+        model = nlp_object._original_nlp.pyomo_model()
+        varList = nlp_object._original_nlp.get_pyomo_variables()[:nlp_object.n_primals()]
+    else:
+        raise ValueError('Incorrect NLP object')
+        
+    direction = 'out'
+    suffix_U = f'ipopt_zU_{direction}'
+    suffix_L = f'ipopt_zL_{direction}'
+    #print(getattr(model, suffix_U).display())
+    #print(getattr(model, suffix_L).display())
+    #print(f'{global_param_index = }')
+    sigma_L = np.zeros((len(varList)))
+    sigma_U = np.zeros((len(varList)))
 
-    :return: None
+    if hasattr(model, suffix_L):
+        if len(getattr(model, suffix_L)) == 0:
+            #print('Nothing to get here...moving on')
+            return H
 
-    """
-    from kipet.estimability_tools.parameter_handling import set_scaled_parameter_bounds
-    
-    # if verbose:
-    #     print(f'd: {d}')
-
-    ipopt = SolverFactory('ipopt')
-    ipopt.options['linear_solver'] = 'ma57'
-    _tmpfile = 'reduced_hessian'
-    
-    
-    #local_parameters = set(parameter_set).difference(global_parameters)
-    
-    # print(f'{global_parameters= }')
-    # print(f'{parameter_set = }')
-    
-    # print('THE OPT IS start')
-    # print(model.P.display())
-    # print(f'{local_parameters = }')
-    
-    if fix_method == 'global':
-
-        if d is not None:
-            param_val_dict = {p: d[i] for i, p in enumerate(global_parameters)}
-            for k, v in getattr(model, variable_name).items():
-                if k in global_parameters:
-                    v.set_value(param_val_dict[k])
-
-        add_global_constraints(model, global_parameters, variable_name)
-
-        #use_bounds = True
-        if use_bounds:
-            set_scaled_parameter_bounds(model,
-                                        parameter_set=parameter_set,
-                                        rho=rho,
-                                        scaled=scaled)
-
-    elif fix_method == 'fixed':
-
-        # if hasattr(model, self.global_constraint_name):
-        #     self.model_object.del_component(self.global_constraint_name)
-
-        delta = 1e-20
-        for k, v in getattr(model, variable_name).items():
-            if k in parameter_set:
-                ub = v.value
-                lb = v.value - delta
-                v.setlb(lb)
-                v.setub(ub)
-                v.unfix()
-            else:
-                v.fix()
-    
-    
-    for key, param in model.P.items():
-        if key not in parameter_set:
-            param.unfix()
+    # print(f'{len(model.ipopt_zU_in)}')
+    # print(f'{len(model.ipopt_zU_out)}')
+    # print(f'{len(model.ipopt_zL_in)}')
+    # print(f'{len(model.ipopt_zL_out)}')
+        
+    for i, indx in enumerate(global_param_index):
+        
+        v = varList[indx]
+        sig_L = 0
+        if v.lb is not None:
+            #print(f'{v.value = }\n{v.lb = }\n{v.ub = }')
+            zL = getattr(model, suffix_L)[v]
+            #print(f'{zL = }')
+            sL = v.value - v.lb
+            xlb_max = np.maximum(1, abs(v.lb))
+            sL += bound_relax_factor*xlb_max
+            if sL <  1e-40:
+                sL += 10*eps*xlb_max
+                
+            sig_L = zL/sL
+                
+        sigma_L[indx] = (sig_L)
+        
+        sig_U = 0
+        if v.ub is not None:
+            # print(f'{v.value = }\n{v.lb = }\n{v.ub = }')
+            zU = abs(getattr(model, suffix_U)[v])
+            #print(f'{zU = }')
+            sU = v.ub - v.value
+            xub_max = np.maximum(1, abs(v.ub))
+            sU += bound_relax_factor*xub_max
+            if sU <  1e-40:
+                sU += 10*eps*xub_max
+                
+            sig_U = zU/sU
             
-    #print(type(ipopt))
-    #ipopt.config.stream_solver = False
+        sigma_U[indx] = (sig_U)
+        #print(f'{sig_L = }; {sig_U = }')
+        
+    SL = np.diag(sigma_L)
+    SU = np.diag(sigma_U)
+    _SL = coo_matrix(SL)
+    _SU = coo_matrix(SU)
+
+    _H = H + _SL + _SU
     
-    ipopt.solve(model,
-                symbolic_solver_labels=True,
-                keepfiles=True,
-                tee=False,
-                logfile=_tmpfile,
-                #log_level=1,
-                #stream_solver=False,
-                )
+    return _H
 
-    # print('THE OPT IS FIN')
-    # print(model.P.display())
 
-    stub = ipopt._problem_files[0][:-3]
-
-    kaug = SolverFactory('k_aug')
-    kaug.options["print_kkt"] = ""
-    kaug.solve(model, tee=False)
-
-    return stub
-
-def add_global_constraints(model, parameter_set, variable_name):
-    """This adds the dummy constraints to the model forcing the local
-    parameters to equal the current global parameter values
-
-    :return: None
+def calculate_reduced_hessian(H, J, index_list, global_param_objs, as_df=True, debug=True):
+    """Final method for calculating the reduced Hessian
     
     """
-    from pyomo.environ import Constraint, Param, Set
+    global_param_index, local_param_index, dummy_con_index = index_list
+    all_param_index = global_param_index + local_param_index
     
-    current_set = 'current_p_set'
-    global_param_name='d'
-    global_constraint_name='fix_params_to_global'
-    param_set_name='parameter_names'
+    J_c = delete_from_csr(J.tocsr(), row_indices=dummy_con_index).tocsc()
+    row_indexer = SparseRowIndexer(J_c.T)
+    J_f = row_indexer[global_param_index].T
+    J_l = delete_from_csr(J_c.tocsr(), col_indices=all_param_index) 
     
-    # if parameter_set is None:
-    #parameter_set = ['k1'] #[p for p in getattr(model, variable_name)]
-    # print('Adding the constraints')
-    # print(f'{parameter_set = }')
+    # if debug:
+    # print(f'{J.shape = }')
+    # print(f'{H.shape = }')
+    # print(f'{J_c.shape = }')
+    # print(f'{J_f.shape = }')
+    # print(f'{J_l.shape = }')
+    # print(f'{J_f = }')
+    
+    n_free = len(global_param_index)
+    n = H.shape[0]
+    X = spsolve(J_l.tocsc(), -J_f.tocsc())
+    constrained_var_index = list(set(range(n)).difference(set(all_param_index)))
+    constrained_var_index.sort()
+    Z = lil_matrix(np.zeros([n, n_free]))
+    Z[global_param_index, :] = np.eye(n_free)
+    Z[constrained_var_index, :] = X
+    reduced_hessian = Z.T * H * Z
+    rh = reduced_hessian.todense()
+    
+    if as_df:
+        labels = [p.name for p in global_param_objs]
+        rh = pd.DataFrame(rh, columns=labels, index=labels)
+    
+    return rh
 
-    # if self.scaled:
-    #     global_param_init = {p: 1 for p in parameter_set}
-    # else:
-    global_param_init = {p: getattr(model, variable_name)[p].value for p in parameter_set}
 
-    for comp in [global_constraint_name, global_param_name, current_set]:
-        if hasattr(model, comp):
-            model.del_component(comp)
-
-    setattr(model, current_set, Set(initialize=parameter_set))
-
-    setattr(model, global_param_name,
-            Param(getattr(model, param_set_name),
-                  initialize=global_param_init,
-                  mutable=True,
-                  ))
-
-    def rule_fix_global_parameters(m, k):
-        return getattr(m, variable_name)[k] - getattr(m, global_param_name)[k] == 0
-
-    setattr(model, global_constraint_name,
-            Constraint(getattr(model, current_set),
-                       rule=rule_fix_global_parameters)
-            )
+def prepare_pseudo_fixed_global_variables(model, global_params, model_vars=['P'], delta=1e-20):
+    """Sets tight bounds for the global variables (RHPS)
+    
+    """
+    for model_var in model_vars:
+        if hasattr(model, model_var):    
+            for k, v in getattr(model, model_var).items():
+                if k in global_params:
+                    ub = v.value
+                    lb = v.value - delta
+                    v.setlb(lb)
+                    v.setub(ub)
+                    v.unfix()
+                else:
+                    v.fix()
 
     return None
+
+
+def prepare_global_constraints(model, global_params, local_params, use_cyipopt=True):
+    """Finds the global and local parameters and adds the dummy constraints
+    to the model
+    
+    """
+    global_param_name='d'
+    global_constraint_name='fix_params_to_global'
+    fix_d_vars=not use_cyipopt
+    global_param_init = {}
+    global_constraints = []
+    constraint_map = {}
+    
+    for comp in [global_constraint_name, global_param_name]:
+        if hasattr(model, comp):
+            model.del_component(comp)
+        if hasattr(model, f'{comp}_index'):
+            model.del_component(f'{comp}_index')
+    
+    setattr(model, global_constraint_name, ConstraintList())
+    setattr(model, global_param_name, VarList())
+    
+    for i, (k, v) in enumerate(global_params.items()):
+        
+        getattr(model, global_param_name).add()
+        getattr(model, global_param_name)[i + 1] = getattr(model, v.model_var)[v.index].value
+        getattr(model, global_constraint_name).add(getattr(model, v.model_var)[v.index] - getattr(model, global_param_name)[i + 1] == 0)
+        constraint_map[v.name] = i + 1
+        
+        if fix_d_vars:
+            getattr(model, global_param_name)[i + 1].fix()
+        
+    return constraint_map
+    
+
+def generate_parameter_object_lists(r_model, single=False):
+    
+    """Parameter object lists are used to generate the RH
+    
+    """
+    model = r_model.p_model
+    if not single:
+        global_params_dict, local_params_dict = r_model.globals_locals
+    else:
+        global_params_dict, local_params_dict = r_model.all_globals
+    global_param_objs = [v.pyomo_var for v in global_params_dict.values()]
+    local_param_objs = [v.pyomo_var for v in local_params_dict.values()]
+    dummy_con_objs = []
+    global_constraint_name = 'fix_params_to_global'
+    
+    if hasattr(model, global_constraint_name):
+        dummy_con_objs = [v for v in getattr(model, global_constraint_name).values()]
+    
+    return global_param_objs, local_param_objs, dummy_con_objs
+
+
+def generate_parameter_index_lists(nlp, model_object_lists):
+    """Makes lists of parameter indeces
+    
+    """
+    if isinstance(nlp, ProjectedNLP):
+        nlp = nlp._original_nlp
+    
+    global_param_objs, local_param_objs, dummy_con_objs = model_object_lists
+    global_param_index = nlp.get_primal_indices(global_param_objs)
+    local_param_index = nlp.get_primal_indices(local_param_objs)
+    dummy_con_index = nlp.get_constraint_indices(dummy_con_objs)
+    
+    return global_param_index, local_param_index, dummy_con_index
+
+
+def optimize_model(model, solver_options=None, nlp_object=None, return_nlp=True, files=False, use_sipopt=False, debug=False):
+    """Generic method to optimize a ConcreteModel using the SolverFactory.
+    
+    """
+    solver = SolverFactory(solver_path('ipopt'))
+    
+    if solver_options is None:
+        solver_options = {'linear_solver': 'ma57'}
+    
+    if isinstance(solver_options, dict):
+        for k, v in solver_options.items():
+            solver.options[k] = v
+    
+    solver_kwargs = {'tee': debug}
+    if files:
+        
+        solver_kwargs['logfile'] = "opt_model_k_aug"
+        solver_kwargs['report_timing'] = True
+        solver_kwargs['symbolic_solver_labels'] = True
+        solver_kwargs['keepfiles'] = True
+    
+    solver.solve(model, **solver_kwargs)
+    update_warm_start(model)
+    
+    nlp_object = None
+    if return_nlp:
+        nlp_object = PyomoNLP(model)
+    
+    return nlp_object, solver
+
+
+def optimize_model_cyipopt(nlp_object, solver_options=None):
+    """Generic method to optimize a ConcreteModel using a projected NLP object
+    using CyIpopt.
+    
+    """    
+    if nlp_object is None:
+        raise ValueError('The ProjectedNLP object needs to be provided')
+        
+    if solver_options is None:
+        solver_options = {
+            'linear_solver': 'ma57',
+            }
+        if __settings.general.hsllib is not None:
+            solver_options['hsllib'] = __settings.general.hsllib
+        
+    cy_nlp = CyIpoptNLP(nlp_object)
+    csolve = CyIpoptSolver(cy_nlp, 
+                           options = solver_options,
+                           )
+    
+    x, info = csolve.solve(tee=False)
+    nlp_object._original_nlp.set_duals(info['mult_g'])
+    nlp_object._original_nlp.load_state_into_pyomo(
+                bound_multipliers=(info['mult_x_L'], info['mult_x_U']))
+
+    return nlp_object, info
+
+
+def covariance_matrix_single_model(reaction_model, use_sigma=True, use_k_aug=False):
+    """A simple method to get the covariance matrix without much effort from the user
+    
+    :param ReactionModel reaction_model: The ReactionModel object with a solved p_model
+    
+    :return pd.DataFrame covariance_matrix: The covariance matrix of the p_model
+    
+    """
+    rh = reduced_hessian_single_model(reaction_model, use_sigma=use_sigma, use_k_aug=use_k_aug)
+    covariance_matrix = np.linalg.inv(rh)
+    covariance_matrix = pd.DataFrame(covariance_matrix, columns=rh.columns, index=rh.index)
+    covariance_matrix = reorder_rh_cov_matrix(reaction_model, covariance_matrix)
+    col_ind_P, col_ind_param_hr = new_free_variables(reaction_model)
+    covariance_matrix_reduced = covariance_matrix.loc[list(col_ind_P.keys()), :]
+
+    return covariance_matrix, covariance_matrix_reduced
+
+
+def reduced_hessian_single_model(reaction_model, use_sigma=True, use_k_aug=False):
+    """A simple method to get the reduced Hessian without much effort from the user
+    
+    :param ReactionModel reaction_model: The ReactionModel object with a solved p_model
+    
+    :return pd.DataFrame rh: The reduced Hessian of the p_model
+    
+    """
+    if use_k_aug:
+        use_sigma = False
+        
+    nlp_object = reaction_model._nlp
+    model_object_lists = generate_parameter_object_lists(reaction_model, single=True)
+    index_list = generate_parameter_index_lists(nlp_object, model_object_lists)
+    
+    if use_k_aug:
+        H, J, K = kkt_kaug(reaction_model)
+    else:
+        H, J, grad = build_matrices(nlp_object, index_list[0], use_cyipopt=False, use_sigma=use_sigma)
+    
+    rh = calculate_reduced_hessian(H, J, index_list, model_object_lists[0], as_df=True, debug=True)
+    
+    return rh
+
+
+def reduced_hessian(nlp_object, model_object_lists, use_cyipopt=False, as_df=True, debug=False, use_k_aug=False):
+    """Consolidates some methods together
+    
+    """    
+    index_list = generate_parameter_index_lists(nlp_object, model_object_lists)
+    
+    if not use_k_aug:
+        H, J, grad = build_matrices(nlp_object, index_list[0], use_cyipopt=use_cyipopt)
+        rh = calculate_reduced_hessian(H, J, index_list, model_object_lists[0], as_df=as_df, debug=debug)
+    else:
+        pass
+    
+        
+    
+    return rh
+
+
+def inertia_correction(m, kappa_e = 10.0, e_min =1.0e-20, e_max = 1.0):
+    """Compute the inertia correction for a given matrix m
+    Arg:
+        m: ndarray
+
+        kappa_e: increment of the correction value
+
+        e_min: initial value of the correction value
+
+        e_max: maximum value of the correction value
+    
+    Retuen:
+        m : ndarray corrected m matrix
+    """
+    # Check whether the inertia correction is required or not
+    is_IC_correct = False
+    n_pivot = np.linalg.matrix_rank(m)
+    if n_pivot == m.shape[0]:
+        print('--- Correct inertia without correction ---')
+        is_IC_correct = True
+
+    if not is_IC_correct:
+        # Initialize correction value and counter
+        e = e_min
+        counter = 0 
+        
+        # Check the inertial of matrix m
+        while True:
+
+            if e > e_max:
+                raise Exception('Inertia correction reaches the maximum limit')
+
+            m = m + e*np.indentity(m.shape[0])
+            n_pivot = np.linalg.matrix_rank(m)
+
+            if n_pivot == m.shape[0]:
+                print(f'--- Correct inertia with e = {e} ---')
+                break
+            elif n_pivot < m.shape[0]:
+                counter += 1
+                e *= kappa_e
+
+    return m
+
 
 def delete_from_csr(mat, row_indices=[], col_indices=[]):
     """
