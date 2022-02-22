@@ -585,6 +585,7 @@ template_string = """
                                         <th scope="col">+/- (95% CI)</th>
                                         {% endif %}
                                         
+                                        <th scope="col">Fixed</th>
                                         <th scope="col">Bounds</th>
                                         <th scope="col">Units</th>
                                         <th scopr="col">Description</th>
@@ -607,6 +608,7 @@ template_string = """
                                         </td>
                                         {% endif %}
                                         
+                                        <td>{{ param.fixed }}</td>
                                         <td>({{ param.lb}}, {{ param.ub }})</td>
                                         <td>{{ param.units }}</td>
                                         <td>{{ param.description }}</td>
