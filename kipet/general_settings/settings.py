@@ -200,3 +200,45 @@ def _is_number(s):
         return True
     finally:
         return False
+
+#%%
+def solver_path(solver='ipopt', full_path=True):
+    """This ensures that strange things don't happen when the paths are not
+    found for the solvers. You can update this if not needed
+    
+    """
+    import os
+    
+    custom_solver = {
+        'ipopt': '/Users/kevinmcbride/scratch/dist/bin/ipopt',
+        'k_aug': '/Users/kevinmcbride/scratch/k_aug_install/k_aug/bin/k_aug',
+        'ipopt_sens' :'/Users/kevinmcbride/scratch/dist/bin/ipopt_sens',
+    }
+    
+    if not full_path:
+        return solver
+    else:
+        if custom_solver[solver] is None:
+            full_path_to_solver = os.popen(f'which {solver}').read().rstrip('\n')
+            print(f'{full_path_to_solver = }')
+            if full_path_to_solver is None or full_path_to_solver == '':
+                raise ValueError(f'Solver {solver} not found in path')
+            else:
+                return full_path_to_solver
+        else:
+            return custom_solver[solver]
+    
+    
+sp = solver_path(solver='ipopt', full_path=True)
+print(sp)
+
+
+
+
+
+
+
+
+
+
+
