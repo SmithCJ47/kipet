@@ -9,6 +9,7 @@ import time
 import numpy as np
 import pandas as pd
 from pyomo.environ import (
+    ConcreteModel,
     Constraint, 
     ConstraintList, 
     Objective,
@@ -46,8 +47,13 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         print(f'{reaction_model = }')
         print(f'{model = }')
         
-        super(ParameterEstimator, self).__init__(getattr(reaction_model, model))
-
+        if isinstance(model, str) and model in ['_model', 's_model', 'v_model', 'p_model']:
+            # use the specified model within the ReactionModel
+            super(ParameterEstimator, self).__init__(getattr(reaction_model, model))
+        elif isinstance(model, ConcreteModel):
+            # Use the provided model
+            super(ParameterEstimator, self).__init__(model)
+            
         self.__var = VariableNames()
         self._reaction_model = reaction_model
 
@@ -769,8 +775,10 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
     
         #print(f'{model.ipopt_zL_out = }')
     
-        self.nlp.set_primals([var.value for var in self.nlp.get_pyomo_variables()])
-        self.nlp.set_duals(list(model.dual.values()))
+        if hasattr(self, 'nlp') and self.nlp is not None:
+    
+            self.nlp.set_primals([var.value for var in self.nlp.get_pyomo_variables()])
+            self.nlp.set_duals(list(model.dual.values()))
         
         #if self.use_bl_func:
         
