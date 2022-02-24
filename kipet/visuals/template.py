@@ -745,16 +745,16 @@ template_string = """
                             <h3>Charts</h3>
                             {% for chart in models[name].chart_C_files %}
                             <div class="chart">
-                                <iframe width="100%" height="550px" frameborder="0" seamless="seamless" src="{{ chart }}"></iframe>
+                                <iframe width="100%" height="550px" frameborder="0" seamless="seamless" src="{{ chart }}.svg"></iframe>
                             </div>
-                            <a class="external file" href="{{ chart }}">File</a>
+                            <a class="external file" href="{{ chart }}.html">File</a>
                             {% endfor %}
                             
                             {% for chart in models[name].chart_S_files %}
                             <div class="chart">
-                                <iframe width="100%" height="550px" frameborder="0" seamless="seamless" src="{{ chart }}"></iframe>
+                                <iframe width="100%" height="550px" frameborder="0" seamless="seamless" src="{{ chart }}.svg"></iframe>
                             </div>
-                            <a class="external file" href="{{ chart }}">File</a>
+                            <a class="external file" href="{{ chart }}.html">File</a>
                             {% endfor %}
                             
                             {% for chart in models[name].chart_U_files %}
@@ -767,9 +767,9 @@ template_string = """
                             {% endif %}
                             <div class="collapse" id="collapse_U">
                                 <div class="chart">
-                                    <iframe width="100%" height="550px" frameborder="0" seamless="seamless" src="{{ chart }}"></iframe>
+                                    <iframe width="100%" height="550px" frameborder="0" seamless="seamless" src="{{ chart }}.svg"></iframe>
                                 </div>
-                                <a class="external file" href="{{ chart }}">File</a>
+                                <a class="external file" href="{{ chart }}.html">File</a>
                             </div>
                             {% endfor %}
                             
@@ -783,9 +783,9 @@ template_string = """
                             {% endif %}
                             <div class="collapse" id="collapse_Y">
                                 <div class="chart">
-                                    <iframe width="100%" height="550px" frameborder="0" seamless="seamless" src="{{ chart }}"></iframe>
+                                    <iframe width="100%" height="550px" frameborder="0" seamless="seamless" src="{{ chart }}.svg"></iframe>
                                 </div>
-                                <a class="external file" href="{{ chart }}">File</a>
+                                <a class="external file" href="{{ chart }}.html">File</a>
                             </div>
                             {% endfor %}
                         </div>
@@ -820,16 +820,16 @@ template_string = """
                                 </table>
                                 {% if models[name].res_chart is not none %}
                                 <div class="chart">
-                                    <iframe id="i1" width="100%" height="550px" frameborder="0" seamless="seamless" src="{{ models[name].res_chart }}"></iframe>
+                                    <iframe id="i1" width="100%" height="550px" frameborder="0" seamless="seamless" src="{{ models[name].res_chart }}.svg"></iframe>
                                 </div>
-                                <a class="external file" href="{{ models[name].res_chart }}">File</a>
+                                <a class="external file" href="{{ models[name].res_chart }}.html">File</a>
                                 {% endif %}
                                 
                                 {% if models[name].par_chart is not none %}
                                 <div class="chart">
-                                    <iframe width="100%" height="100%" frameborder="0" seamless="seamless" src="{{ models[name].par_chart }}"></iframe>
+                                    <iframe width="100%" height="100%" frameborder="0" seamless="seamless" src="{{ models[name].par_chart }}.svg"></iframe>
                                 </div>
-                                <a class="external file" href="{{ models[name].par_chart }}">File</a>
+                                <a class="external file" href="{{ models[name].par_chart }}.html">File</a>
                                 {% endif %}
                                 <p class="mt-4">
                                     <a class="toggle" data-bs-toggle="collapse" href="#collapse_fit" role="button" aria-expanded="false" aria-controls="collapseExample">
@@ -945,5 +945,4 @@ template_string = """
     </script>
     
 </html>
-
 """
