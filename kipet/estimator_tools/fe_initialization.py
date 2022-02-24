@@ -22,6 +22,7 @@ from kipet.input_output.kipet_io import supress_stdout
 
 class FEInit(PyomoSimulator):
     
+    """Step by step initialization of a Pyomo model"""
     
     def __init__(self, model, dosing_points=None):
         
@@ -138,10 +139,8 @@ class FEInit(PyomoSimulator):
                         conc_change = dp.conc[0]
                         vol_change = dp.vol[0]
                         moles_expr[dp.component] += conc_change * vol_change
-                        
                         delta_conc_obj = {k: v / vol_obj - conc_obj[k] for k, v in moles_expr.items()}
                         delta_conc_obj[self.volume_name] = volume_change_in_dosing_point
-                        
                         dosing_constraints[time] = delta_conc_obj
                     
         return dosing_constraints
@@ -190,58 +189,11 @@ def _t_ij(time_set, i, j):
 
     """
     if i < time_set.get_discretization_info()['nfe']:
-        h = time_set.get_finite_elements()[i + 1] - time_set.get_finite_elements()[i]  #: This would work even for 1 fe
+        h = time_set.get_finite_elements()[i + 1] - time_set.get_finite_elements()[i]
     else:
-        h = time_set.get_finite_elements()[i] - time_set.get_finite_elements()[i - 1]  #: This would work even for 1 fe
+        h = time_set.get_finite_elements()[i] - time_set.get_finite_elements()[i - 1]
     tau = time_set.get_discretization_info()['tau_points']
     fe = time_set.get_finite_elements()[i]
     time = fe + tau[j] * h
     
     return round(time, 6)
-
-
-# def add_constraints(self):
-#     """
-#     This method adds constraints to handle dosing points - this greatly
-#     updates the original method using an equal number of constraints and
-#     variables.
-    
-#     """
-#     vs = ReplacementVisitor()
-#     model_time_set = getattr(self.model_orig, self.time_set)
-#     ncp = model_time_set.get_discretization_info()['ncp']
-#     comp_dict = self._make_comp_dict()
-#     dosing_constraints = self._dosing_point_aggregation()
-    
-#     def jump_rule(model, time, comp):
-        
-#         model_var = self._make_comp_dict()[comp]
-#         dosing_change = self._dosing_point_aggregation()[time]
-#         return model.J[time, comp] - getattr(model, model_var)[time, comp] - dosing_change[comp] == 0
-
-#     times = [t for t in dosing_constraints.keys()]
-#     comps = [c for c in comp_dict.keys()]
-#     # dummy_var_name = 'J'
-#     # self.model_orig.add_component(dummy_var_name, Var(times, comps))
-#     # constraint_jump_name = 'J_con'
-#     # self.model_orig.add_component(constraint_jump_name, Constraint(times, comps, rule=jump_rule))
-
-#     for dosing_time in sorted(times):
-#         jump_fe, _ = _fe_cp(model_time_set, dosing_time)
-#         for kcp in range(1, ncp + 1):
-#             cp_time = _t_ij(model_time_set, jump_fe + 1, kcp)
-#             for comp in comps:
-#                 model_var = comp_dict[comp]
-#                 state_constraint_name = f'd{model_var}dt_disc_eq'
-#                 state_constraint_object = getattr(self.model_orig, state_constraint_name)
-                
-#                 old_expr = state_constraint_object[cp_time, comp].expr
-#                 # This should be the expression
-#                 #vs.change_replacement(self.model.J[dosing_time, comp])
-                
-#                 vs.change_replacement(getattr(self.model_orig, model_var)[dosing_time, comp] + dosing_constraints[dosing_time][comp])
-#                 target_var_object = getattr(self.model_orig, model_var)[dosing_time, comp]
-#                 vs.change_suspect(id(target_var_object))
-                
-#                 new_expr = vs.dfs_postorder_stack(old_expr)
-#                 state_constraint_object[cp_time, comp].set_value(new_expr)
