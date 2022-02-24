@@ -30,7 +30,6 @@ from kipet.calculation_tools.interpolation import interpolate_trajectory
 #from kipet.calculation_tools.model_funs import step_fun
 from kipet.estimability_tools.estimability_analysis import EstimabilityAnalyzer
 from kipet.estimability_tools.reduced_hessian_parameter_selection import rhps_method, replace_non_estimable_parameters
-from kipet.estimator_tools.fe_simulator import FESimulator
 from kipet.estimator_tools.fe_initialization import FEInit
 from kipet.estimator_tools.parameter_estimator import ParameterEstimator
 from kipet.estimator_tools.pyomo_simulator import PyomoSimulator
