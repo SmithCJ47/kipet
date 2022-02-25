@@ -343,6 +343,10 @@ class Report:
         time = self.reactions[0].timestamp
         current_dir = Path(__file__).parent
         templates_dir = (current_dir / 'templates').resolve()
+        
+        if not templates_dir.is_dir():
+            templates_dir.mkdir()
+        
         generate_template_file(templates_dir)
 
         style_file = (templates_dir / 'report.css').resolve()
