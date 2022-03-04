@@ -14,7 +14,7 @@ from pyomo.opt import SolverFactory
 # KIPET library imports
 from kipet.estimator_tools.initialize2 import initialize_by_time_element
 from kipet.estimator_tools.pyomo_simulator import PyomoSimulator
-from kipet.general_settings.settings import solver_path
+from kipet.general_settings.solver_settings import solver_path
 from kipet.general_settings.variable_names import VariableNames
 from kipet.model_tools.visitor_classes import ReplacementVisitor
 from kipet.input_output.kipet_io import supress_stdout
