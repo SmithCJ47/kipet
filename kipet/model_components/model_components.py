@@ -188,6 +188,7 @@ class ModelAlgebraic(ModelElement):
                  conversion_factor=1,
                  is_reaction=False,
                  active=True,
+                 state=None,
                  ):
     
         """The initialization of a model algebraic (dosing, steps, custom, etc.)
@@ -207,6 +208,7 @@ class ModelAlgebraic(ModelElement):
         :param float conversion_factor: An attribute for converting scalars in unit changes
         :param bool is_reaction: Indicates if the algebraic is a reaction equation
         :param bool active: Turns the algebraic equation on/off
+        :param str state: If a state becomes algebraic, this describes what it is (concentration, state)
         
         """
         super().__init__(name, ModelComponent.class_, value, units,
@@ -219,6 +221,7 @@ class ModelAlgebraic(ModelElement):
         self.step = step
         self.is_reaction = is_reaction
         self.active = active
+        self.state = state
     
     def __str__(self):
         
@@ -269,7 +272,8 @@ class ModelComponent(ModelElement):
                  units_orig=None,
                  conversion_factor=1,
                  inert=False,
-                 S=None
+                 S=None,
+                 as_algebraic=False,
                  ):
         """The initialization of a model component (concentration based)
         
@@ -303,6 +307,7 @@ class ModelComponent(ModelElement):
         self.absorbing = absorbing
         self.inert = inert
         self.S = S
+        self.is_algebraic = as_algebraic
         
         #self._check_units()
         
@@ -362,6 +367,7 @@ class ModelState(ModelElement):
                  model_var=None,
                  units_orig=None,
                  conversion_factor=1,
+                 as_algebraic=False,
                  ):
         """The initialization of a model state
         
@@ -390,6 +396,7 @@ class ModelState(ModelElement):
         self.known = known
         self.bounds = bounds
         self.data = data
+        self.is_algebraic = as_algebraic
         
         #self._check_units()
         
