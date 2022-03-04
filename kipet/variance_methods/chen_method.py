@@ -17,7 +17,7 @@ from kipet.variance_methods.chen_method_pyomo import solve_C, solve_S, solve_Z
 from kipet.variance_methods.chen_method_scipy import (build_c_model,
                                                       build_s_model, solve_c_scipy, solve_s_scipy)
 
-from kipet.general_settings.settings import solver_path
+from kipet.general_settings.solver_settings import solver_path
 
 def run_method(var_est_object, solver, run_opt_kwargs):
     """This is the original method for estimating variances from Chen et
