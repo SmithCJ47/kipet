@@ -17,8 +17,9 @@ from kipet.estimator_tools.results_object import ResultsObject
 from kipet.input_output.kipet_io import print_margin
 from kipet.mixins.parameter_estimator_mixins import PEMixins
 from kipet.general_settings.variable_names import VariableNames
-from kipet.general_settings.settings import solver_path
+from kipet.general_settings.solver_settings import solver_path
 from kipet.model_tools.pyomo_model_tools import to_dict
+
 
 class MultipleExperimentsEstimator(PEMixins, object):
     """This class is for Estimation of Variances and parameters when we have multiple experimental datasets.
@@ -40,6 +41,7 @@ class MultipleExperimentsEstimator(PEMixins, object):
         self.parameter_means = False
         self.rm_cov = None
         self.free_params = None
+        self.spectra_problem = False
         self.__var = VariableNames()
 
     
@@ -147,10 +149,7 @@ class MultipleExperimentsEstimator(PEMixins, object):
                 parameters, 
                 mee_obj=self.model,
             )
-            
-            #%%
-            
-        # self = lab.mee
+      
         index = []
         for name in self.param_names_full:
             
@@ -175,7 +174,6 @@ class MultipleExperimentsEstimator(PEMixins, object):
             V_theta = compute_covariance(models_dict, H, free_params, all_variances)
             self.cov = pd.DataFrame(V_theta, index=index, columns=index)  
         
-        #%%
         self.rm_variances = {}
         self.rm_cov = {}
         for name, rm in self.reaction_models.items():
@@ -201,8 +199,7 @@ class MultipleExperimentsEstimator(PEMixins, object):
             
             self.rm_cov[name] = c
         
-        #%%
-        
+
         self.p_variances = np.diag(self.cov.values)
         self._display_covariance()
         
@@ -351,11 +348,7 @@ class MultipleExperimentsEstimator(PEMixins, object):
         
         combined_model.experiment = Block(self.experiments, rule=build_individual_blocks)
         combined_model.map_exp_to_count = dict(enumerate(self.experiments))
-        
-        
         initial_P = {}
-        
-        model = 's_model'
         
         for i, exp in enumerate(self.experiments):
             if hasattr(self.reaction_models[exp], 'p_model'):
@@ -367,18 +360,17 @@ class MultipleExperimentsEstimator(PEMixins, object):
             if i == 0:
                 initial_P = P_exp
                 continue
-            
             for k, v in P_exp.items():
                 initial_P[k] += v
             
         for k, v in initial_P.items():
             initial_P[k] = v / len(self.experiments)
         
-        print(f'{initial_P = }')
+        initial_P = {k: v for k, v in initial_P.items() if k in self.global_params}
         
-        global_param_name='d'
+        global_param_name = 'd'
         setattr(combined_model, 'current_p_set', Set(initialize=self.global_params))
-        # Better initializations needed
+
         setattr(
             combined_model,
             global_param_name,
@@ -387,11 +379,8 @@ class MultipleExperimentsEstimator(PEMixins, object):
                 initialize=initial_P,
             )
         )
-        combined_model.d['k1'].setlb(0)
-        combined_model.d['k2'].setlb(0)
 
         def rule_fix_global_parameters(m, exp, param):
-            
             for key, val in combined_model.map_exp_to_count.items():
                 if param in self.global_params and param in getattr(combined_model.experiment[exp], self.__var.model_parameter):
                     return getattr(combined_model.experiment[exp], self.__var.model_parameter)[param] - getattr(combined_model, global_param_name)[param] == 0
@@ -410,26 +399,22 @@ class MultipleExperimentsEstimator(PEMixins, object):
         set_params_across_blocks = self.all_params.difference(set_fixed_params)
         combined_model.parameter_linking = Constraint(self.experiments, set_params_across_blocks, rule = rule_fix_global_parameters)
         
-        
         if self.spectra_problem:
             
             global_S_name='S_global'
-            
-            # Initialize the S from the variance estimation results
             initial_S = {}
             for i, exp in enumerate(self.experiments):
                 S_exp = to_dict(self.reaction_models[exp].v_model.S)
                 if i == 0:
                     initial_S = S_exp
                     continue
-        
                 for k, v in S_exp.items():
                     initial_S[k] += v
                 
             for k, v in initial_S.items():
                 initial_S[k] = v / len(self.experiments)
             
-            # initial_S = to_dict(self.reaction_models['reaction-1'].v_model.S)
+            initial_S = to_dict(self.reaction_models['reaction-1'].v_model.S)
             
             setattr(
                 combined_model,
@@ -440,44 +425,30 @@ class MultipleExperimentsEstimator(PEMixins, object):
                     bounds=(0, None),
                 )
             )
-            #print(f'{initial_S = }')
             
             def rule_link_wavelengths(m, exp, wave, comp):
-             
                 for key, val in combined_model.map_exp_to_count.items():
-                    #if wave in self.all_wavelengths and comp in combined_model.experiment[exp].mixture_components:
                     if (wave, comp) in getattr(combined_model.experiment[exp], self.__var.spectra_species):
                         return getattr(combined_model.experiment[exp], self.__var.spectra_species)[wave, comp] - getattr(combined_model, global_S_name)[wave, comp] == 0
                     else:
                         return Constraint.Skip
-                    # else:
-                    #     return Constraint.Skip
-    
+                   
             if shared_spectra == True:
-                print('shared = True')
-                
                 combined_model.spectra_linking = Constraint(self.experiments, self.all_wavelengths, self.all_species, rule = rule_link_wavelengths)
         
         # Add in experimental weights
         combined_model.objective = Objective(sense=minimize, expr=sum(b.error for b in combined_model.experiment[:]))
         
-        from kipet.estimator_tools.reduced_hessian_methods import add_warm_start_suffixes
-        
-        #add_warm_start_suffixes(combined_model)
-        
         self.simulation_initialization = False
         if self.simulation_initialization:
             
             parameters_to_unfix = {}
-            
             global_parameters_fixed = []
             
             # You only need to fix the free_params - no more
             # Go through list and fix those with a model == reaction name
             # If a parameter is global, check if a model has it and fix it - only once!
             for fp in self.free_params:
-                
-                #print(fp.identity)
                 
                 if not fp.is_global:
                     model = combined_model.experiment[fp.model]
@@ -493,12 +464,6 @@ class MultipleExperimentsEstimator(PEMixins, object):
                             global_parameters_fixed.append((fp.name, value))
                             break
                      
-                        
-            # print(f'{global_parameters_fixed = }')
-                    
-            
-                    
-            # print(f'{parameters_to_unfix = }')
             simulator = SolverFactory(solver_path('ipopt'))
             simulator.solve(combined_model, options=solver_opts, tee=True)
             
