@@ -4,6 +4,8 @@ Settings for KIPET
 # Standard library imports
 import ast
 from pathlib import Path
+import pkg_resources
+import pandas as pd
 
 # Third party imports
 import yaml
@@ -76,6 +78,11 @@ class Settings:
             settings += '\nSolver Settings (solver):\n'
             for k, v in self.solver.items():
                 settings += f'{str(k).rjust(m)} : {v}\n'
+                
+        # if hasattr(self, 'custom_solvers'):
+        #     settings += '\nUser Defined Solvers (custom_solvers):\n'
+        #     for k, v in self.custom_solvers.items():
+        #         settings += f'{str(k).rjust(m)} : {v}\n'
 
         return settings
 
@@ -133,6 +140,7 @@ class Settings:
         self.parameter_estimator = AttrDict(self.cfg['parameter_estimator'])
         self.parameter_estimator.update({'solver_opts': AttrDict()})
         self.solver = AttrDict(self.cfg['solver'])
+        #self.custom_solvers = AttrDict(self.cfg['custom_solvers'])
         #self.units = AttrDict(self.cfg['units'])
 
         return None
@@ -173,10 +181,11 @@ class Settings:
             'variance_estimator' : 'Variance Estimator Settings',
             'parameter_estimator' : 'Parameter Estimator Settings',
             'solver' : 'Solver Settings',
+           # 'custom_solvers': 'Used Defined Solvers',
         }
         
         keys = ['collocation', 'simulator', 'general', 'variance_estimator',
-                'parameter_estimator', 'solver']
+                'parameter_estimator', 'solver']#, 'custom_solvers']
         
         nested_dict = {}
         for key in keys:
@@ -184,8 +193,6 @@ class Settings:
             
         return nested_dict
         
-
-
 def _is_number(s):
     """ Returns True if the input is a float (number), else False
 
@@ -200,45 +207,3 @@ def _is_number(s):
         return True
     finally:
         return False
-
-#%%
-def solver_path(solver='ipopt', full_path=True):
-    """This ensures that strange things don't happen when the paths are not
-    found for the solvers. You can update this if not needed
-    
-    """
-    import os
-    
-    custom_solver = {
-        'ipopt': '/Users/kevinmcbride/scratch/dist/bin/ipopt',
-        'k_aug': '/Users/kevinmcbride/scratch/k_aug_install/k_aug/bin/k_aug',
-        'ipopt_sens' :'/Users/kevinmcbride/scratch/dist/bin/ipopt_sens',
-    }
-    
-    if not full_path:
-        return solver
-    else:
-        if custom_solver[solver] is None:
-            full_path_to_solver = os.popen(f'which {solver}').read().rstrip('\n')
-            print(f'{full_path_to_solver = }')
-            if full_path_to_solver is None or full_path_to_solver == '':
-                raise ValueError(f'Solver {solver} not found in path')
-            else:
-                return full_path_to_solver
-        else:
-            return custom_solver[solver]
-    
-    
-sp = solver_path(solver='ipopt', full_path=True)
-print(sp)
-
-
-
-
-
-
-
-
-
-
-
