@@ -7,7 +7,7 @@ from pyomo.environ import Constraint, Objective, Param, Set, SolverFactory, Suff
 
 # KIPET library imports
 from kipet.estimator_tools.parameter_estimator import ParameterEstimator
-from kipet.general_settings.settings import solver_path
+from kipet.general_settings.solver_settings import solver_path
 
 
 class EstimabilityAnalyzer(ParameterEstimator):
