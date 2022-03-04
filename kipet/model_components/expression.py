@@ -152,28 +152,64 @@ class Expression:
         self.units = pyo_units.get_units(self.expression)
         return None
 
-    def check_division(self, eps=1e-12):
-        """Add a small amount to the numerator and denominator in a
-        DivisionExpression to improve the numerics.
 
-        :param float eps: The small addition to the numerator and denominator
-
-        :return: None
-
-        """
-        expr = self.expression
+    @staticmethod
+    def check_div_term(term):
         
-        if isinstance(expr, DivisionExpression):
+        expr_new = 0
+        eps = 1e-12
         
-            ex1, ex2 = expr.args
+        if isinstance(term, DivisionExpression):
+            ex1, ex2 = term.args
             ex1 += eps
             ex2 += eps
-            expr_new = ex1/ex2
+            expr_new = ex1/ex2    
+            return expr_new
             
-            self.expression = expr_new
-            self.expression_orig = expr
+        else:
+            return term
+        
+
+    # def check_division(self, eps=1e-12):
+    #     """Add a small amount to the numerator and denominator in a
+    #     DivisionExpression to improve the numerics.
+
+    #     :param float eps: The small addition to the numerator and denominator
+
+    #     :return: None
+
+    #     """
+    #     expr = self.expression
+    #     expr_new = 0
+        
+    #     print('IN THE DIC CHEC')
+    #     print(expr.args)
+        
+    #     expr = self.check_div_term
+        
+    #     if isinstance(expr, DivisionExpression):
+    #         ex1, ex2 = expr.args
+    #         ex1 += eps
+    #         ex2 += eps
+    #         expr_new = ex1/ex2    
+            
+    #     # You need to write this recursively
+            
+    #     else:
+    #         for term in expr.args:
+            
+    #             print(term.to_string())    
+            
+    #             isinstance(term, DivisionExpression):
+    #                 ex1, ex2 = expr.args
+    #                 ex1 += eps
+    #                 ex2 += eps
+    #                 expr_new = ex1/ex2 
+            
+    #     self.expression = expr_new
+    #     self.expression_orig = expr
     
-        return None
+    #     return None
 
     @staticmethod
     def _check_term(term, convert_to):
