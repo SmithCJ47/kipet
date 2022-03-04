@@ -95,16 +95,10 @@ class PlotObject:
         if self.filename is not None:
             self.folder_name = self.filename
             
-            
-            
-        print(f'{use_simulation = }')
-            
         if self.reaction_model.models['p_model'] and not use_simulation:
             self.results = self.reaction_model.results
         elif use_simulation:
             self.results = self.reaction_model.results_dict['simulator']
-            
-            print(self.results.P)
             
         else:
             raise ValueError('The results are not specified properly')
