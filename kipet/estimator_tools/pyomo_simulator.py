@@ -16,7 +16,7 @@ from kipet.model_tools.pyomo_model_tools import (get_index_sets,
                                                       index_set_info,
                                                       model_info)
 from kipet.general_settings.variable_names import VariableNames
-from kipet.general_settings.settings import solver_path
+from kipet.general_settings.solver_settings import solver_path
 
 
 class PyomoSimulator:
@@ -445,9 +445,6 @@ class PyomoSimulator:
         solver_results = opt.solve(self.model, tee=tee, symbolic_solver_labels=True)
         results = ResultsObject()
         results.load_from_pyomo_model(self.model)
-        
-        results.Z.plot()
-
         return results
    
     @staticmethod
