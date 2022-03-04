@@ -10,7 +10,7 @@ from pyomo.environ import Objective, Param, SolverFactory
 
 # KIPET library imports
 from kipet.estimator_tools.results_object import ResultsObject
-from kipet.general_settings.settings import solver_path
+from kipet.general_settings.solver_settings import solver_path
         
 
 def run_alternate_method(var_est_object, solver, run_opt_kwargs):
@@ -311,7 +311,7 @@ def _solve_delta_given_sigma(var_est_object, solver, **kwds):
             #obj += conc_objective(var_est_object.model, sigma=sigmas_sq)
             obj += 0.5*((var_est_object.model.C[t, k] - var_est_object.model.Z[t, k])**2)/(sigmas_sq[k])
             
-    obj += (nwp)*log((inlog)+1e-12)     
+    obj += (nwp)*log((inlog) + 1e-12)     
     var_est_object.model.init_objective = Objective(expr=obj)
     
     opt = SolverFactory(solver_path(solver))
