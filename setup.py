@@ -10,7 +10,6 @@ import os.path
 from setuptools import dist
 dist.Distribution().fetch_build_eggs(['Cython>=0.15.1', 'numpy>=1.10', 'six>=1.15'])
 
-readme = ''
 here = os.path.abspath(os.path.dirname(__file__))
 readme_path = os.path.join(here, 'README.md')
 if os.path.exists(readme_path):
@@ -19,8 +18,9 @@ if os.path.exists(readme_path):
 
 setup(
     long_description=readme,
+    long_description_content_type='text/markdown',
     name='kipet',
-    version='1.0.6',
+    version='1.0.65',
     description='An all-in-one tool for fitting kinetic models using spectral and other state data',
     python_requires='==3.*,>=3.8.0',
     project_urls={
@@ -33,7 +33,7 @@ setup(
     packages=[
         'kipet', 'kipet.calculation_tools', 'kipet.estimability_tools', 'kipet.estimator_tools',
         'kipet.general_settings', 'kipet.input_output', 'kipet.main_modules', 'kipet.mixins',
-	'kipet.model_components', 'kipet.model_tools', 'kipet.variance_methods',
+	    'kipet.model_components', 'kipet.model_tools', 'kipet.variance_methods',
         'kipet.visuals'
     ],
     package_dir={"": "."},
@@ -43,9 +43,10 @@ setup(
     install_requires=[
         'attrs==20.*,>=20.3.0', 'matplotlib==3.*,>=3.3.4',
         'numpy==1.*,>=1.20.1', 'pandas==1.*,>=1.2.2', 'pint==0.*,>=0.16.1',
-        'plotly==4.*,>=4.14.3', 'pyomo==5.*,>=5.7.3', 'pyyaml==5.*,>=5.4.1',
+        'plotly==4.*,>=4.14.3', 'pyomo==6.*,>=6.2', 'pyyaml==5.*,>=5.4.1',
         'scipy==1.*,>=1.6.0', 'kaleido==0.2.1', 'jinja2==3.0.1', 'pytexit==0.3.4',
     ],
     extras_require={"dev": ["pytest==5.*,>=5.2.0", "isort==5.*,>=5.8.0", "mypy>=0.812", "sphinx-rtd-theme==0.5.2"]},
-
+    include_package_data=True,
 )
+
