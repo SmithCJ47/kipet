@@ -5,13 +5,16 @@ Report generation class
 # Standard library imports
 from pathlib import Path
 import os
-import re 
+import re
+import warnings 
 import webbrowser
+from zipfile import ZipFile
 
 # Third party imports 
 from jinja2 import Environment, FileSystemLoader
 import pandas as pd
 from pytexit import py2tex
+
 
 def generate_template_file(templates_dir):
     """
@@ -47,6 +50,7 @@ def generate_template_file(templates_dir):
 
     return None
 
+
 class Report:
     
     """ This class contains the methods used to prepre model data for inclusion in the HTML report"""
@@ -54,9 +58,7 @@ class Report:
     def __init__(self, model_list, is_simulation=False):
         
         self.reactions = model_list # ReactionModels
-        
         # define the results object here
-        
         self.simulation = is_simulation
 
     @staticmethod
@@ -307,18 +309,18 @@ class Report:
         :return: None
         
         """
-        from zipfile import ZipFile
-
-        folder = save_dir
-        filename = 'report'
-        chart_files = retrieve_file_paths(charts_dir)
-        output_file_name = folder.joinpath(f'{filename}.zip')
-        zip_obj = ZipFile(output_file_name, 'w')
-        zip_obj.write((save_dir / 'report.html').resolve(), 'report.html')
-        for file in chart_files:
-            file_path = self.get_chart_file_dir(file)
-            zip_obj.write(file, file_path)
-        zip_obj.close()
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            folder = save_dir
+            filename = 'report'
+            chart_files = retrieve_file_paths(charts_dir)
+            output_file_name = folder.joinpath(f'{filename}.zip')
+            zip_obj = ZipFile(output_file_name, 'w')
+            zip_obj.write((save_dir / 'report.html').resolve(), 'report.html')
+            for file in chart_files:
+                file_path = self.get_chart_file_dir(file)
+                zip_obj.write(file, file_path)
+            zip_obj.close()
         
         return None
 
@@ -585,9 +587,7 @@ class Report:
                 time = time,
             ))
         
-        
         self.create_zip_file(final_dir, charts_dir)
-        
         webbrowser.open('file://' + os.path.realpath(filename))
             
         return None
@@ -624,8 +624,5 @@ def retrieve_file_paths(dir_name):
   return filePaths
     
     
-
-    
-
 if __name__ == '__main__':
     pass
