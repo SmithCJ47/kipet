@@ -51,8 +51,8 @@ variance_estimator:
   tolerance: 1.0e-05
   with_plots: false
 custom_solvers:
-  ipopt: /Users/kevinmcbride/scratch/dist/bin/ipopt
-  ipopt_sens: /Users/kevinmcbride/scratch/dist/bin/ipopt_sens
+  ipopt: null 
+  ipopt_sens: null
   k_aug: null
 custom_solvers_lib:
-  hsllib: /Users/kevinmcbride/scratch/dist/lib/libhsl.dylib
+  hsllib: null
