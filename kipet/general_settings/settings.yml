@@ -12,7 +12,8 @@ general:
   simulation_times: null
   add_volume_terms: true
   save_output: true
-  hsllib: libcoinhsl.dylib
+  concentration_lb: 0
+  spectral_lb: 1.0e-6
 parameter_estimator:
   confidence: 0.95
   covariance: null
@@ -49,3 +50,9 @@ variance_estimator:
   tee: true
   tolerance: 1.0e-05
   with_plots: false
+custom_solvers:
+  ipopt: /Users/kevinmcbride/scratch/dist/bin/ipopt
+  ipopt_sens: /Users/kevinmcbride/scratch/dist/bin/ipopt_sens
+  k_aug: null
+custom_solvers_lib:
+  hsllib: /Users/kevinmcbride/scratch/dist/lib/libhsl.dylib
