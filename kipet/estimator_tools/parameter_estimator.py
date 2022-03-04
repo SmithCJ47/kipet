@@ -35,7 +35,7 @@ from kipet.estimator_tools.results_object import ResultsObject
 from kipet.mixins.parameter_estimator_mixins import PEMixins
 from kipet.model_tools.pyomo_model_tools import convert
 from kipet.general_settings.variable_names import VariableNames
-from kipet.general_settings.settings import solver_path
+from kipet.general_settings.solver_settings import solver_path
 
 
 class ParameterEstimator(PEMixins, PyomoSimulator):
@@ -43,9 +43,6 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
     """Optimizer for parameter estimation"""
 
     def __init__(self, reaction_model, model):
-        
-        print(f'{reaction_model = }')
-        print(f'{model = }')
         
         if isinstance(model, str) and model in ['_model', 's_model', 'v_model', 'p_model']:
             # use the specified model within the ReactionModel
@@ -154,6 +151,7 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         Z_in = kwds.pop('Z_in', dict())
 
         self.solver = solver_path(solver)
+        self.tee = tee
         
         # These should really be defined in __init__ and not here
         self.covariance_method = covariance
@@ -226,7 +224,8 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
             with_d_vars=with_d_vars,
             **kwds)
         
-        add_warm_start_suffixes(self.model)
+        if not hasattr(self.model, 'ipopt_zL_out'):
+            add_warm_start_suffixes(self.model)
         
         return variances
         
@@ -427,8 +426,6 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         if self.scale_variance:
             print(f'# ParameterEstimator: Scaling the variances using {variance_level} variance equal to {variance_divider:.4e}')
             sigma_sq = {k : v/variance_divider for k, v in sigma_sq.items()}
-        
-        #print(f'{sigma_sq = }')
     
         self.use_bl_func = False
         if self._spectra_given:
@@ -445,21 +442,12 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
     
                 if not 'device' in sigma_sq.keys():
                     all_sigma_specified = False
-                    sigma_sq['device'] = 1e-6
+                    sigma_sq['device'] = 1e-4
     
             elif isinstance(sigma_sq, float):
                 sigma_dev = sigma_sq
                 sigma_sq = dict()
                 sigma_sq['device'] = sigma_dev
-            
-            print(f'{sigma_sq = }')
-            #sigma_sq = {k: 1e-6 for k in  .keys()}
-            
-            #min_sigma = min([v for v in sigma_sq.values()])
-            #sigma_sq = {k: v/min_sigma for k, v in sigma_sq.items()}
-            #sigma_sq = {k: 1 for k, v in sigma_sq.items()}
-            # sigma_sq['device'] = 1
-            # print(f'{sigma_sq = }')
             
             if self.time_invariant_G_no_decompose:
                 for i in model.times_spectral:
@@ -737,7 +725,8 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         
         """
         #number_of_variables = None
-        add_warm_start_suffixes(model)
+        if not hasattr(self.model, 'ipopt_zL_out'):
+            add_warm_start_suffixes(model)
         
         optimizer = SolverFactory(self.solver)
         for key, val in self.solver_opts.items():
@@ -765,18 +754,14 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         # else:
         solver_results = optimizer.solve(
             model, 
-            tee=True, 
+            tee=self.tee, 
             symbolic_solver_labels=True
         )
         
-        #update_warm_start(model)
         self.solver_results = solver_results
         self._termination_problems(solver_results, optimizer)
     
-        #print(f'{model.ipopt_zL_out = }')
-    
         if hasattr(self, 'nlp') and self.nlp is not None:
-    
             self.nlp.set_primals([var.value for var in self.nlp.get_pyomo_variables()])
             self.nlp.set_duals(list(model.dual.values()))
         
@@ -848,7 +833,7 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
             optimizer = SolverFactory(method)
             self.solver_opts.update({'compute_red_hessian': 'yes'})
             for key, val in self.solver_opts.items():
-                print(f'{key}: {value}')
+                #print(f'{key}: {value}')
                 optimizer.options[key] = val
             # num_vars = self._regular_optimization(model, sigma_sq)
             self.covariance(optimizer, sigma_sq)
@@ -888,11 +873,10 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         
         if self.covariance_method == 'pynumero':
             self.inv_hessian, self.inv_hessian_reduced = covariance_matrix_single_model(self._reaction_model, use_sigma=True)
-            print(f'{self.inv_hessian = }')
         
         elif self.covariance_method == 'k_aug':
             self.inv_hessian, self.inv_hessian_reduced = covariance_k_aug(self._reaction_model)
-            print(f'{self.inv_hessian = }')
+            
         # Performs the optimization as well
         elif self.covariance_method == 'ipopt_sens':
             self.inv_hessian, self.inv_hessian_reduced = covariance_sipopt(self.model, optimizer, self.comps['unknown_absorbance'], self.param_names_full)
@@ -903,13 +887,16 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
             models_dict = {'reaction_model': self.model}
             free_params = len(self.param_names)
             variances = {'reaction_model': sigma_sq}
-            print(f'{variances = }')
             self.covariance_parameters = compute_covariance(models_dict, self.inv_hessian_reduced, free_params, variances)
         else:
             self.covariance_parameters = self.inv_hessian_reduced
             
         # Define the covariance attribute
-        self.cov = pd.DataFrame(self.covariance_parameters, index=self.param_names, columns=self.param_names)
+        df_values = self.covariance_parameters
+        if isinstance(df_values, pd.DataFrame):
+            df_values = df_values.values
+        
+        self.cov = pd.DataFrame(df_values, index=self.param_names, columns=self.param_names)
     
         return None
     
@@ -1054,7 +1041,7 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         # need to put in an optional running of the variance estimator for the new
         # parameter estiamtion run, or just use the previous full model run to initialize...
 
-        results, lof = run_param_est(new_template, nfe, ncp, sigmas, solver=solver)
+        results, lof = run_param_est(self._reaction_model, new_template, nfe, ncp, sigmas, solver=solver)
 
         return results
 
@@ -1361,7 +1348,7 @@ def construct_model_from_reduced_set(builder_clone, end_time, D):
     return opt_model
 
 
-def run_param_est(opt_model, nfe, ncp, sigmas, solver='ipopt'):
+def run_param_est(r_model, opt_model, nfe, ncp, sigmas, solver='ipopt'):
     """ Runs the parameter estimator for the selected subset
 
     :param ConcreteModel opt_model: The model that we wish to run the
@@ -1373,17 +1360,21 @@ def run_param_est(opt_model, nfe, ncp, sigmas, solver='ipopt'):
     :return lof: lack of fit results
 
     """
-    p_estimator = ParameterEstimator(opt_model, 'p_model')
+    # This needs to pass the reaction model and not the pyomo model
+    p_estimator = ParameterEstimator(r_model, opt_model)
     p_estimator.apply_discretization('dae.collocation', nfe=nfe, ncp=ncp, scheme='LAGRANGE-RADAU')
     options = dict()
 
     
 
     # These may not always solve, so we need to come up with a decent initialization strategy here
-    results_pyomo = p_estimator.run_opt('ipopt',
+    p_estimator.set_up('ipopt',
                                         tee=False,
                                         solver_opts=options,
                                         variances=sigmas)
+    
+    results_pyomo = p_estimator.run_opt(True, sigmas)
+    
     # else:
     #     results_pyomo = p_estimator.run_opt(solver,
     #                                         tee=False,
