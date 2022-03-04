@@ -51,59 +51,16 @@ from kipet.estimator_tools.multiprocessing_kipet import Multiprocess
 #from kipet.estimator_tools.reduced_hessian_methods import add_global_constraints
 from kipet.estimator_tools.results_object import ResultsObject        
 from kipet.model_tools.pyomo_model_tools import get_vars
-# from kipet.estimator_tools.reduced_hessian_methods import var_con_data, _build_reduced_hessian, free_variables, define_free_parameters, delete_from_csr, SparseRowIndexer, _reduced_hessian_matrix
+
 from kipet.input_output.kipet_io import print_margin
-from kipet.estimator_tools.reduced_hessian_methods import reduced_hessian, build_matrices, calculate_reduced_hessian, prepare_global_constraints, optimize_model, optimize_model_cyipopt, generate_parameter_object_lists, generate_parameter_index_lists
-from kipet.general_settings.settings import solver_path
-
-from pyomo.contrib.pynumero.interfaces.nlp_projections import ProjectedNLP
-from pyomo.contrib.pynumero.algorithms.solvers.cyipopt_solver import CyIpoptSolver, CyIpoptNLP
-
+#from kipet.estimator_tools.reduced_hessian_methods import reduced_hessian, build_matrices, calculate_reduced_hessian, prepare_global_constraints, optimize_model, optimize_model_cyipopt, generate_parameter_object_lists, generate_parameter_index_lists
+from kipet.general_settings.solver_settings import solver_path, SolverSettings
 
 import kipet.estimator_tools.reduced_hessian_methods as rhm
 from kipet.estimator_tools.nsd_step import NSD_Model
 
-#%%
 DEBUG = True
- 
-"""
-     WITH CYIPOPT
-model.nconstraints() = 7182
-model.nvariables() = 8092
-nlp_object.n_constraints() = 7182
-nlp_object.n_primals() = 7182
-J.shape = (7184, 7184)
-H.shape = (7184, 7184)
-J_c.shape = (7182, 7184)
-J_f.shape = (7182, 2)
-J_l.shape = (7182, 7182)
-J_f = <7182x2 sparse matrix of type '<class 'numpy.float64'>'
-	with 3588 stored elements in Compressed Sparse Column format>
-model.nconstraints() = 7182
-model.nvariables() = 8092
-nlp_object.n_constraints() = 7182
-nlp_object.n_primals() = 7182
-J.shape = (7184, 7184)
-H.shape = (7184, 7184)
-J_c.shape = (7182, 7184)
-J_f.shape = (7182, 2)
-J_l.shape = (7182, 7182)
-J_f = <7182x2 sparse matrix of type '<class 'numpy.float64'>'
-	with 3588 stored elements in Compressed Sparse Column format>
-    
-    NO CYIPOPT 
-model.nconstraints() = 7182
-model.nvariables() = 8092
-nlp_object.n_constraints() = 7182
-nlp_object.n_primals() = 7182
-J.shape = (7182, 7182)
-H.shape = (7182, 7182)
-J_c.shape = (7180, 7182)
-J_f.shape = (7180, 2)
-J_l.shape = (7180, 7180)
-J_f = <7180x2 sparse matrix of type '<class 'numpy.float64'>'
-	with 3588 stored elements in Compressed Sparse Column format>
-"""
+
 
 class NSD:
 
@@ -130,7 +87,7 @@ class NSD:
         print(f'# NSD: Initializing models and variables')
         
         self.use_cyipopt = False
-        self.use_full_KKT = True
+        self.use_full_KKT = False
         self.use_k_aug = False
         
         if self.use_cyipopt:
@@ -213,7 +170,7 @@ class NSD:
         self.zUList = {i: [v for v in self.varList[i] if v.ub is not None] for i in self.reaction_models}
         
         self._has_global_constraints = False
-        self.add_global_parameter_constraints_2()
+        #self.add_global_parameter_constraints_2()
         self.initialize_global_variables()
         self.final_param = {}
         
@@ -312,52 +269,52 @@ class NSD:
         
         return None
     
-    def add_global_parameter_constraints_2(self):
+    # def add_global_parameter_constraints_2(self):
         
-        from kipet.estimator_tools.reduced_hessian_methods import prepare_global_constraints, generate_parameter_object_lists
+    #     from kipet.estimator_tools.reduced_hessian_methods import prepare_global_constraints, generate_parameter_object_lists
         
-        use_cyipopt = self.use_cyipopt
-        model_vars = self.model_vars #['P', 'S']
-        self.global_param_objs = {}
-        self.model_object_lists = {}
-        self.constraint_map = {}
-        self.reverse_constraint_map = {}
+    #     use_cyipopt = self.use_cyipopt
+    #     model_vars = self.model_vars #['P', 'S']
+    #     self.global_param_objs = {}
+    #     self.model_object_lists = {}
+    #     self.constraint_map = {}
+    #     self.reverse_constraint_map = {}
         
-        self.projected_nlp_list = []
-        self.nlp_list = {}
-        self.projected_nlp_list = {}
-        self.mdict = {}
+    #     self.projected_nlp_list = []
+    #     self.nlp_list = {}
+    #     self.projected_nlp_list = {}
+    #     self.mdict = {}
         
-        for key, r_model in self.reaction_models.items():
+    #     for key, r_model in self.reaction_models.items():
             
-            r_model.start_parameter_manager(model_vars=self.model_vars)
-            global_parameter_set, local_parameter_set = r_model.globals_locals
-            model = self.model_dict[key]
-            self.constraint_map[key] = prepare_global_constraints(model,
-                                                                  global_parameter_set, 
-                                                                  local_parameter_set, 
-                                                                  use_cyipopt, 
-                                                                  )
+    #         r_model.start_parameter_manager(model_vars=self.model_vars)
+    #         global_parameter_set, local_parameter_set = r_model.globals_locals
+    #         model = self.model_dict[key]
+    #         self.constraint_map[key] = prepare_global_constraints(model,
+    #                                                               global_parameter_set, 
+    #                                                               local_parameter_set, 
+    #                                                               use_cyipopt, 
+    #                                                               )
             
-            self.reverse_constraint_map[key] = {v: k for k, v in self.constraint_map[key].items()}
+    #         self.reverse_constraint_map[key] = {v: k for k, v in self.constraint_map[key].items()}
     
-            r_model._create_pynumero_model_object()
-            self.reaction_models[key] = r_model
-            nlp = self.reaction_models[key]._nlp
-            self.nlp_list[key] = nlp
-            varNames = r_model._nlp.primals_names()
-            projected_nlp = ProjectedNLP(nlp, varNames[:-len(getattr(model, 'd'))])
-            self.projected_nlp_list[key] = projected_nlp
-            model_object_lists = generate_parameter_object_lists(r_model)
-            global_param_objs = model_object_lists[0]
-            self.model_object_lists[key] = model_object_lists
-            self.global_param_objs[key] = global_param_objs
+    #         r_model._create_pynumero_model_object()
+    #         self.reaction_models[key] = r_model
+    #         nlp = self.reaction_models[key]._nlp
+    #         self.nlp_list[key] = nlp
+    #         varNames = r_model._nlp.primals_names()
+    #         projected_nlp = ProjectedNLP(nlp, varNames[:-len(getattr(model, 'd'))])
+    #         self.projected_nlp_list[key] = projected_nlp
+    #         model_object_lists = generate_parameter_object_lists(r_model)
+    #         global_param_objs = model_object_lists[0]
+    #         self.model_object_lists[key] = model_object_lists
+    #         self.global_param_objs[key] = global_param_objs
             
-            nlp_object = nlp
-            if self.use_cyipopt:
-                nlp_object = projected_nlp
+    #         nlp_object = nlp
+    #         if self.use_cyipopt:
+    #             nlp_object = projected_nlp
             
-            self.mdict[key] = generate_model_data(model, nlp_object)
+    #         self.mdict[key] = rhm.generate_model_data(model, nlp_object)
     
     
     # def add_global_parameter_constraints(self):
@@ -781,7 +738,7 @@ class NSD:
         options = {#'tol': 3e-1,
                    #'acceptable_tol' : 1e-4,
                  #  'bound_relax_factor': 1.0e-8, 
-                   'max_iter': 10000,
+                   'max_iter': 10,
                    #'print_user_options': 'yes', 
                    #'nlp_scaling_method': 'none',
                    'print_level': 5,
@@ -789,20 +746,15 @@ class NSD:
                    #'alpha_for_y': 'full',
                #    'accept_every_trial_step': 'yes',
                    'linear_solver': 'ma57',
-                   'hsllib': 'libcoinhsl.dylib',
+                   #'hsllib': 'libcoinhsl.dylib',
                    'print_info_string': 'yes',
                    'output_file': 'ipopt_output_nsd.txt',
                    'file_print_level' : 6,
                    }
-        #nlp.add_option('mu_strategy', 'adaptive')
-        #nlp.add_option('linear_solver', 'ma57')
-        #nlp.add_option('tol', 1e-7)
-        
-        # with open("ipopt.opt", "w") as f:
-        #  f.write("print_info_string yes \n"
-        #          "output_file ipopt_output.txt \n"
-        #          "file_print_level 6 \n"
 
+        solver_settings = SolverSettings()
+        if solver_settings.custom_solvers_lib['hsllib'] is not None:
+            nlp.add_option('hsllib', solver_settings.custom_solvers_lib['hsllib'])
 
         if options: 
             for key, value in options.items():
@@ -1170,6 +1122,8 @@ class NSD:
     
     def _model_update(self, model, x):
         
+        #print(f'{x = }')
+        
         nsd = self.nsd_models[model.name]
         if nsd.iter_last is not None:    
             nsd.update_primals(x)
@@ -1188,7 +1142,7 @@ class NSD:
         dual_modifier = 1 - 2*(not self.use_cyipopt)
         
         for i, (key, val) in enumerate(getattr(nsd.model, 'fix_params_to_global').items()):
-            local_var_name = self.reverse_constraint_map[model.name][key]
+            local_var_name = nsd.reverse_constraint_map[key]
             dict_key = self.labels[model.name][local_var_name]
             dual_value = -1*dual_modifier*duals.loc[local_var_name].value
             duals_dict[dict_key] = dual_value
@@ -1433,124 +1387,124 @@ def print_debug(value):
         print(f'{value = }')
         
 
-def generate_model_data(model, nlp):
+# def generate_model_data(model, nlp):
     
-    if isinstance(nlp, ProjectedNLP):
-        nlp = nlp._original_nlp
+#     if isinstance(nlp, ProjectedNLP):
+#         nlp = nlp._original_nlp
         
-    dummy_constraints = [v for v in getattr(model, 'fix_params_to_global').values()]
-    dummy_vars = [id(v) for v in getattr(model, 'd').values()]
-    attr_dict = {}
-    attr_dict['varList'] = [v for v in nlp.get_pyomo_variables() if id(v) not in dummy_vars]
-    attr_dict['conList'] = nlp.get_pyomo_constraints()
-    attr_dict['zLList'] = [v for v in attr_dict['varList'] if v.lb is not None]
-    attr_dict['zUList'] = [v for v in attr_dict['varList'] if v.ub is not None]
-    attr_dict['conList_dummy'] = [v for v in attr_dict['conList'] if v in dummy_constraints]
-    attr_dict['conList_red'] = [v for v in attr_dict['conList'] if v not in dummy_constraints]
-    attr_dict['var_index_names'] = [v.name for v in attr_dict['varList']]
-    attr_dict['init_data'] = {v.name : v.value for v in attr_dict['varList']}
+#     dummy_constraints = [v for v in getattr(model, 'fix_params_to_global').values()]
+#     dummy_vars = [id(v) for v in getattr(model, 'd').values()]
+#     attr_dict = {}
+#     attr_dict['varList'] = [v for v in nlp.get_pyomo_variables() if id(v) not in dummy_vars]
+#     attr_dict['conList'] = nlp.get_pyomo_constraints()
+#     attr_dict['zLList'] = [v for v in attr_dict['varList'] if v.lb is not None]
+#     attr_dict['zUList'] = [v for v in attr_dict['varList'] if v.ub is not None]
+#     attr_dict['conList_dummy'] = [v for v in attr_dict['conList'] if v in dummy_constraints]
+#     attr_dict['conList_red'] = [v for v in attr_dict['conList'] if v not in dummy_constraints]
+#     attr_dict['var_index_names'] = [v.name for v in attr_dict['varList']]
+#     attr_dict['init_data'] = {v.name : v.value for v in attr_dict['varList']}
         
 
-    return attr_dict
+#     return attr_dict
 
-def get_E_matrix(nlp, mdict):
+# def get_E_matrix(nlp, mdict):
 
-    _J_dum = nlp.extract_submatrix_jacobian(pyomo_variables=mdict['varList'], pyomo_constraints=mdict['conList_dummy'])
-    _z = coo_matrix((len(mdict['conList_red']), len(mdict['conList_dummy'])))
-    E = vstack([_J_dum.T, _z], format='csc')
-    return E
+#     _J_dum = nlp.extract_submatrix_jacobian(pyomo_variables=mdict['varList'], pyomo_constraints=mdict['conList_dummy'])
+#     _z = coo_matrix((len(mdict['conList_red']), len(mdict['conList_dummy'])))
+#     E = vstack([_J_dum.T, _z], format='csc')
+#     return E
 
-def _KKT(nlp, mdict, use_cyipopt=True, index_list=None):
+# def _KKT(nlp, mdict, use_cyipopt=True, index_list=None):
     
-    if isinstance(nlp, PyomoNLP):
-        J = nlp.extract_submatrix_jacobian(pyomo_variables=mdict['varList'], pyomo_constraints=mdict['conList_red'])
-        H = nlp.extract_submatrix_hessian_lag(pyomo_variables_rows=mdict['varList'], pyomo_variables_cols=mdict['varList'])
+#     if isinstance(nlp, PyomoNLP):
+#         J = nlp.extract_submatrix_jacobian(pyomo_variables=mdict['varList'], pyomo_constraints=mdict['conList_red'])
+#         H = nlp.extract_submatrix_hessian_lag(pyomo_variables_rows=mdict['varList'], pyomo_variables_cols=mdict['varList'])
    
-    else:
+#     else:
         
-        H, J, grad = build_matrices(nlp, index_list[0], use_cyipopt=use_cyipopt)
-        J_c = delete_from_csr(J.tocsr(), row_indices=index_list[2]).tocsc()
-        J = J_c
+#         H, J, grad = build_matrices(nlp, index_list[0], use_cyipopt=use_cyipopt)
+#         J_c = delete_from_csr(J.tocsr(), row_indices=index_list[2]).tocsc()
+#         J = J_c
 
-    ## Construct KKT matrix
-    K = bmat([[H, J.T],[J, None]], format='csc')
+#     ## Construct KKT matrix
+#     K = bmat([[H, J.T],[J, None]], format='csc')
 
-    # if self.inertia_correction:
-    K = inertia_correction(K)
+#     # if self.inertia_correction:
+#     K = inertia_correction(K)
 
-    return K, J, H
+#     return K, J, H
 
-def _KKT_kaug(size): #nlp, mdict, use_cyipopt=True, index_list=None):
-    """Given the size of the variables and constraints, the Hessian and Jacobian
-    can be built using the output files from k_aug
+# def _KKT_kaug(size): #nlp, mdict, use_cyipopt=True, index_list=None):
+#     """Given the size of the variables and constraints, the Hessian and Jacobian
+#     can be built using the output files from k_aug
     
-    :param tuple size: The m (con) and n (var) size of the Jacobian
+#     :param tuple size: The m (con) and n (var) size of the Jacobian
     
-    :return: The Hessian and Jacobian as a tuple of sparse (coo) matrices
+#     :return: The Hessian and Jacobian as a tuple of sparse (coo) matrices
     
-    """
-    from pathlib import Path
-    m, n = size
-    kaug_files = Path('GJH')
+#     """
+#     from pathlib import Path
+#     m, n = size
+#     kaug_files = Path('GJH')
     
-    hess_file = kaug_files.joinpath('H_print.txt')
-    hess = pd.read_csv(hess_file, delim_whitespace=True, header=None, skipinitialspace=True)
+#     hess_file = kaug_files.joinpath('H_print.txt')
+#     hess = pd.read_csv(hess_file, delim_whitespace=True, header=None, skipinitialspace=True)
     
-    hess.columns = ['irow', 'jcol', 'vals']
-    hess['irow'] -= 1
-    hess['jcol'] -= 1
+#     hess.columns = ['irow', 'jcol', 'vals']
+#     hess['irow'] -= 1
+#     hess['jcol'] -= 1
    
-    jac_file = kaug_files.joinpath('A_print.txt')
-    jac = pd.read_csv(jac_file, delim_whitespace=True, header=None, skipinitialspace=True)
-    jac.columns = ['irow', 'jcol', 'vals']
-    jac['irow'] -= 1
-    jac['jcol'] -= 1
+#     jac_file = kaug_files.joinpath('A_print.txt')
+#     jac = pd.read_csv(jac_file, delim_whitespace=True, header=None, skipinitialspace=True)
+#     jac.columns = ['irow', 'jcol', 'vals']
+#     jac['irow'] -= 1
+#     jac['jcol'] -= 1
     
-    # print(f'{jac.tail() = }')
-    # jac = jac[jac["irow"] <= m]
-    # jac = jac[jac["jcol"] <= n]
-    # #jac = jac[jac["irow"] != m + 1]
-    # print(f'{jac.tail() = }')
+#     # print(f'{jac.tail() = }')
+#     # jac = jac[jac["irow"] <= m]
+#     # jac = jac[jac["jcol"] <= n]
+#     # #jac = jac[jac["irow"] != m + 1]
+#     # print(f'{jac.tail() = }')
     
-    grad_file = kaug_files.joinpath('gradient_f_print.txt')
-    grad = pd.read_csv(grad_file, delim_whitespace=True, header=None, skipinitialspace=True)
-    grad.columns = ['gradient']
+#     grad_file = kaug_files.joinpath('gradient_f_print.txt')
+#     grad = pd.read_csv(grad_file, delim_whitespace=True, header=None, skipinitialspace=True)
+#     grad.columns = ['gradient']
     
-    # print(f'{hess.shape = }')
-    # print(f'{jac.shape = }')
-    # print(f'{grad.shape = }')
-    # print(f'{max(jac["irow"]) = }')
-    # print(f'{max(jac["jcol"]) = }')
-    # print(f'{size = }')
+#     # print(f'{hess.shape = }')
+#     # print(f'{jac.shape = }')
+#     # print(f'{grad.shape = }')
+#     # print(f'{max(jac["irow"]) = }')
+#     # print(f'{max(jac["jcol"]) = }')
+#     # print(f'{size = }')
     
-    J = coo_matrix((jac.vals, (jac.jcol, jac.irow)), shape=(m, n))
-    Hess_coo = coo_matrix((hess.vals, (hess.irow, hess.jcol)), shape=(n, n))
-    H = Hess_coo + triu(Hess_coo, 1).T
+#     J = coo_matrix((jac.vals, (jac.jcol, jac.irow)), shape=(m, n))
+#     Hess_coo = coo_matrix((hess.vals, (hess.irow, hess.jcol)), shape=(n, n))
+#     H = Hess_coo + triu(Hess_coo, 1).T
     
-    K = bmat([[H, J.T],[J, None]], format='csc')
-    #_kkt = csc_matrix(inertia_correction(K.todense()))
-    #K = csc_matrix(_kkt)
+#     K = bmat([[H, J.T],[J, None]], format='csc')
+#     #_kkt = csc_matrix(inertia_correction(K.todense()))
+#     #K = csc_matrix(_kkt)
     
-    return K, H, J
+#     return K, H, J
 
-def evaluate_gradient(nlp, mdict, model_object_lists, use_cyipopt=False):
+# def evaluate_gradient(nlp, mdict, model_object_lists, use_cyipopt=False):
     
-    m = 0
-    global_param_index, _, dummy_con_index = generate_parameter_index_lists(nlp, model_object_lists)
-    duals = nlp.n_constraints()*[0.0]
+#     m = 0
+#     global_param_index, _, dummy_con_index = generate_parameter_index_lists(nlp, model_object_lists)
+#     duals = nlp.n_constraints()*[0.0]
     
-    if not use_cyipopt:
-        model = nlp.pyomo_model()
-        for index, con in zip(dummy_con_index, mdict['conList_dummy']):
-            duals[index] = model.dual[con]
-    else:
+#     if not use_cyipopt:
+#         model = nlp.pyomo_model()
+#         for index, con in zip(dummy_con_index, mdict['conList_dummy']):
+#             duals[index] = model.dual[con]
+#     else:
     
-        duals = nlp.get_duals()
-        # for index, con in zip(dummy_con_index, mdict['conList_dummy']):
-        #     duals[index] = nlp.get_duals()[index]
+#         duals = nlp.get_duals()
+#         # for index, con in zip(dummy_con_index, mdict['conList_dummy']):
+#         #     duals[index] = nlp.get_duals()[index]
         
-    m += np.array(duals)
-    return m
+#     m += np.array(duals)
+#     return m
 
         
         #%%
