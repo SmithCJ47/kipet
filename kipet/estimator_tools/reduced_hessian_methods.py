@@ -9,10 +9,6 @@ from operator import index
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from pyomo.contrib.pynumero.interfaces.pyomo_nlp import PyomoNLP
-from pyomo.contrib.pynumero.interfaces.nlp_projections import ProjectedNLP
-from pyomo.contrib.pynumero.algorithms.solvers.cyipopt_solver import CyIpoptSolver, CyIpoptNLP
-
 from pyomo.environ import SolverFactory, Suffix, ConstraintList, VarList
 from scipy.sparse.linalg import spsolve
 from scipy.sparse import coo_matrix, csr_matrix, csc_matrix, triu, lil_matrix, bmat, vstack
@@ -20,13 +16,25 @@ from scipy.sparse import coo_matrix, csr_matrix, csc_matrix, triu, lil_matrix, b
 # Kipet library imports
 from kipet.general_settings.variable_names import VariableNames
 from kipet.model_tools.pyomo_model_tools import convert
-from kipet.general_settings.settings import solver_path, Settings
+from kipet.general_settings.solver_settings import solver_path, SolverSettings, check_libs
+from kipet.general_settings.settings import Settings
 
+# Conditional Dependencies
+try:
+    from pyomo.contrib.pynumero.interfaces.pyomo_nlp import PyomoNLP
+    from pyomo.contrib.pynumero.interfaces.nlp_projections import ProjectedNLP
+    from pyomo.contrib.pynumero.algorithms.solvers.cyipopt_solver import CyIpoptNLP, CyIpoptSolver
+    __pynumero_libs_installed = True
+except:
+    __pynumero_libs_installed = False
+    pynumero_readme = 'https://github.com/Pyomo/pyomo/tree/master/pyomo/contrib/pynumero'
+    raise ModuleNotFoundError(f'Pynumero libraries have not been found. Please got to {pynumero_readme} for installation instructions.')
     
 __var = VariableNames()
 __settings = Settings()
 
 
+# TODO: NLP
 def generate_model_data(model, nlp):
     """Generates a dictionary of model data used in reduced Hessian methods
     
@@ -211,10 +219,6 @@ def compute_covariance(models_dict, hessian, free_params, all_variances):
         H = H.values
     B = make_B_matrix(models_dict, free_params, all_variances)
     Vd = make_Vd_matrix(models_dict, all_variances)
-    
-    print(f'H: {H.shape = }')
-    print(f'B: {B.shape = }')
-    print(f'Vd: {Vd.shape = }')
     
     R = B.T @ H.T
     A = Vd @ R
@@ -566,30 +570,6 @@ def covariance_k_aug(reaction_model):
         
     return covariance_matrix, covariance_matrix_reduced
 
-    
-# def kkt_pynumero(reaction_model, nlp_object=None):
-    
-#     dummy_constraints = []
-#     dummy_vars = []
-#     if hasattr(reaction_model.p_model, 'fix_params_to_global'):
-#         dummy_constraints = [v for v in getattr(reaction_model.p_model, 'fix_params_to_global').values()]
-#         dummy_vars = [id(v) for v in getattr(reaction_model.p_model, 'd').values()]
-#     attr_dict = {}
-#     attr_dict['varList'] = [v for v in nlp.get_pyomo_variables() if id(v) not in dummy_vars]
-#     attr_dict['conList'] = nlp.get_pyomo_constraints()
-#     attr_dict['conList_red'] = [v for v in attr_dict['conList'] if v not in dummy_constraints]
-    
-#     J = nlp.extract_submatrix_jacobian(pyomo_variables=attr_dict['varList'], pyomo_constraints=attr_dict['conList_red'])
-#     H = nlp.extract_submatrix_hessian_lag(pyomo_variables_rows=attr_dict['varList'], pyomo_variables_cols=attr_dict['varList'])
-
-#     ## Construct KKT matrix
-#     K = bmat([[H, J.T],[J, None]], format='csc')
-
-#     # if self.inertia_correction:
-#     #   K = inertia_correction(K)
-
-#     return H, J, K
-
 
 def build_E_matrix(nlp, mdict):
     """Builds the E matrix (see NSD theory) that places a one at aligned with
@@ -673,218 +653,6 @@ def evaluate_gradient(nlp, mdict, index_list, use_cyipopt=False):
     return m
 
 
-# def var_con_data(file_stub):
-#     """
-#     This prepares the indecies and sizes for the reduced Hessian strucuturing.
-    
-#     The variables are arranged such that the parameters need to be in the right order
-#     and entered in last (for k_aug).
-    
-#     The commented code lets you place the variables in any order, as long as they are
-#     still located at the end (important for B and Vd matrix building.)
-    
-#     """
-
-#     var_index = pd.read_csv(Path(file_stub + '.col'), sep=';', header=None)  # dummy sep
-#     con_index = pd.read_csv(Path(file_stub + '.row'), sep=';', header=None)  # dummy sep
-#     var_index_names = [var_name for var_name in var_index[0]]
-#     con_index_names = [con_name for con_name in con_index[0].iloc[:-1]]
-    
-#     return var_index_names, con_index_names
-    
-
-# def var_con_data_pynumero(pynumero_object):
-    
-#     varList = pynumero_object.get_pyomo_variables()
-#     conList = pynumero_object.get_pyomo_constraints()
-#     duals = pynumero_object.get_duals()
-
-#     J = pynumero_object.extract_submatrix_jacobian(pyomo_variables=varList, pyomo_constraints=conList)
-#     H = pynumero_object.extract_submatrix_hessian_lag(pyomo_variables_rows=varList, pyomo_variables_cols=varList)
-#     J = csc_matrix(J)
-
-#     var_index_names = [v.name for v in varList]
-#     con_index_names = [v.name for v in conList]
-
-#     grad = None
-
-#     return H, J, grad, var_index_names, con_index_names, duals
-
-
-# def free_variables2(model, components, parameters, nlp, global_parameters=None): 
-#     """
-#     This prepares the indecies and sizes for the reduced Hessian strucuturing.
-    
-#     The variables are arranged such that the parameters need to be in the right order
-#     and entered in last (for k_aug).
-    
-#     The commented code lets you place the variables in any order, as long as they are
-#     still located at the end (important for B and Vd matrix building.)
-    
-#     New version uses indicies instead of primals_names
-    
-#     """
-#     #%%
-#     # nlp = r1._nlp
-#     # model = r1.p_model
-#     # components = r1.p_estimator.comps['unknown_absorbance']
-#     # import time  
-    
-#     # s1 = time.time()
-#     # an = nlp.primals_names()
-#     # e1 = time.time()
-    
-#     # print(f'primals_names() takes {e1 - s1} s')
-    
-    
-#     # from pyomo.environ import Var
-#     # # import pdb; pdb.set_trace()
-#     # s2 = time.time()
-#     # list_of_vars = nlp.pyomo_model().component_map(Var)
-#     # primals_names = []
-#     # for var in list_of_vars:
-#     #     var_obj = getattr(model, var)
-#     #     for c, obj in var_obj.items():
-#     #         if obj.fixed or obj.stale:
-#     #             continue
-#     #         if isinstance(c, tuple):
-#     #             primals_names.append(f'{var}[{",".join(list(map(str, c)))}]') # = nlp.get_primal_indices([obj])[0]
-#     #         else:
-#     #             primals_names.append(f'{var}[{c}]')
-#     # e2 = time.time()
-    
-#     # print(f'other method takes {e2 - s2} s')
-    
-#     # primals_new = sorted(primals_names)
-#     # primals_old = sorted(an)
-    
-#     # assert(primals_new == primals_old)
-        
-    
-#     #def _build_var_dict(self, params=[], init=False):
-        
-#     #%%
-#     # nlp = r1._nlp
-#     # model = r1.p_model
-#     # components = r1.p_estimator.comps['unknown_absorbance']
-#     from kipet.general_settings.variable_names import VariableNames
-#     __var = VariableNames()
-        
-#     params = []
-#     from collections import namedtuple
-#     #print(f'{params = }')
-#     P_var = namedtuple('P_var', ('name', 'full_name', 'model_var', 'pyomo_var'))
-#     var_objs = {}
-    
-#     counter = 0
-#     col_ind_param_hr = []
-    
-#     for opt_var in __var.optimization_variables_spectral:
-#         if hasattr(model, opt_var):
-#             for k, v in getattr(model, opt_var).items():
-#                 #print(f'{k = }')
-#                 if v.fixed or v.stale or k in params:
-#                     # print(f'In set: {k in params}')
-#                     # print(f'Is fix: {v.fixed}')
-#                     # print(f'Is old: {v.stale}')
-#                     counter += 1
-#                     continue
-#                 else:
-#                     if isinstance(k, tuple):
-#                         full_name = f'{opt_var}[{",".join(list(map(str, k)))}]'
-#                     else:
-#                         full_name = f'{opt_var}[{k}]'
-                    
-#                     p_var = P_var(k, full_name, opt_var, v)
-#                     var_objs[p_var.name] = p_var
-                    
-#                     if opt_var in __var.optimization_variables:
-#                         col_ind_param_hr.append(counter)
-                    
-#                     counter += 1
-
-#     col_ind_dict = {p.full_name: nlp.get_primal_indices([p.pyomo_var])[0] for p in var_objs.values()}
-    
-#     # for opt_var in __var.optimization_variables:
-#     #     if hasattr(model, opt_var):
-#     #         for k, v in getattr(model, opt_var).items():
-#     #             print(k, v)
-#     #             col_ind_param_hr.append(col_ind_dict[var_objs[k].full_name])
-        
-#     print(f'{col_ind_param_hr = }')
-#     print(f'{len(col_ind_dict) = }')
-#     #print(col_ind_dict['S[1930.0,A]'])
-#     #col_ind_dict_nlp = dict(zip(nlp.primals_names(), nlp.get_primal_indices(nlp.get_pyomo_variables())))
-    
-#     # var_name = 'P'
-#     # p_vars = getattr(model, var_name)
-#     # col_ind_dict = {f'{var_name}[{p}]': nlp.get_primal_indices([obj])[0] for p, obj in p_vars.items() if not obj.fixed}
-    
-#     # var_name = 'C'
-#     # c_vars = getattr(model, var_name)
-#     # for c, obj in c_vars.items():
-#     #     if c[1] not in components or obj.fixed:
-#     #         continue
-#     #     col_ind_dict[f'{var_name}[{c}]'] = nlp.get_primal_indices([obj])[0]
-        
-#     # var_name = 'S'
-#     # c_vars = getattr(model, var_name)
-#     # for c, obj in c_vars.items():
-#     #     if c[1] not in components or obj.fixed:
-#     #         continue
-#     #     col_ind_dict[f'{var_name}[{c}]'] = nlp.get_primal_indices([obj])[0]
-    
-    
-    
-    
-#     #%%
-#     #col_ind_dict = {v: var_index_names.index(v) for v in spectral_vars + parameters}
-#     # print(f'{col_ind_dict = }')
-#     # col_ind = col_ind_dict.values()
-#     # col_ind = [var_index_names.index(v) for v in spectral_vars + parameters]
-#     # col_ind_P = [var_index_names.index(name) for name in parameters]# if not getattr(model, 'P')[name].fixed]
-#     # #print(f'{var_index_names = }')
-#     # col_ind_param_hr = [1,2] #[col_ind.index(p) for p in col_ind_P]
-    
-#     return col_ind_dict, col_ind_param_hr
-
-
-
-# def free_variables(model, components, parameters, var_index_names, global_parameters=None): 
-#     """
-#     This prepares the indecies and sizes for the reduced Hessian strucuturing.
-    
-#     The variables are arranged such that the parameters need to be in the right order
-#     and entered in last (for k_aug).
-    
-#     The commented code lets you place the variables in any order, as long as they are
-#     still located at the end (important for B and Vd matrix building.)
-    
-#     """
-#     spectral_vars = []
-    
-#     print(f'{parameters = }')
-#     # parameters = ['P[k1]']
-    
-#     if components is not None:
-#         if hasattr(model, 'C') and hasattr(model, 'S'):
-#             for var in ['C', 'S']:
-#                 spectral_vars += [f'{var}[{k[0]},{k[1]}]' for k in getattr(model, var) if k[1] in components]
-                
-#     #print(f'{parameters = }')
-#     col_ind_dict = {v: var_index_names.index(v) for v in spectral_vars + parameters}
-#     print(f'{col_ind_dict = }')
-    
-#     col_ind = [var_index_names.index(v) for v in spectral_vars + parameters]
-#     col_ind_P = [var_index_names.index(name) for name in parameters]# if not getattr(model, 'P')[name].fixed]
-#     print(f'{var_index_names = }')
-#     print(f'{len(var_index_names) = }')
-#     col_ind_param_hr = [col_ind.index(p) for p in col_ind_P]
-#     print(f'{col_ind_param_hr = }')
-    
-#     return col_ind_dict, col_ind_param_hr
-
-
 def new_free_variables(reaction_model):
     
     """
@@ -951,289 +719,6 @@ def _build_raw_J_and_H(size):
     
     return H, J, grad
         
-
-def _build_reduced_hessian(size, 
-                           col_ind, 
-                           con_ind=None, 
-                           parameter_set=[], 
-                           global_set=[], 
-                           delete_fixed_constraints=False,
-                           matrices=None):
-    
-    """Constructs the reduced Hessian used in various methods.
-    
-    """
-    #print(f'{size = }')
-    
-    print(f'\n\nTHIS IS THE RED HS\n\n')
-    
-    if matrices is None:
-        H, J, grad = _build_raw_J_and_H(size)
-    else:
-        #print('mats provides' + '$'*70)
-        H, J, grad = matrices
-
-    print(f'{J.shape = }')
-    print(f'{H.shape = }')
-    print(f'{parameter_set = }')
-    print(f'BRH {global_set = }')
-
-    #col_ind = {'P[k1]': 1794}
-    local_set = list(set(parameter_set).difference(set(global_set)))
-    # print(f'{local_set = }')
-
-    if delete_fixed_constraints:
-        
-        # print(f'{global_set = }')
-        #print(f'{con_ind[-2:] = }')
-        # # print(f'{len(con_ind) = }')
-        print(f'{global_set = }')
-        
-        dummy_constraints = [f'fix_params_to_global[{k}]' for k in global_set]
-        
-        jac_row_ind = [con_ind.index(d) for d in dummy_constraints]
-        # print(f'{len(con_ind) = }')
-        # print(f'{len(col_ind) = }')
-        
-        # print(f'{jac_row_ind = }')
-        print(f'{col_ind = }')
-        
-        col_ind_local = [v for k, v in col_ind.items() if k.lstrip('P[').rstrip(']') in local_set]
-        col_ind_global = [v for k, v in col_ind.items() if k.lstrip('P[').rstrip(']') not in local_set]
-
-        print(f'{col_ind_local = }')
-        # print(f'{col_ind_global = }')
-
-        J_c = delete_from_csr(J.tocsr(), row_indices=jac_row_ind).tocsc()
-        row_indexer = SparseRowIndexer(J_c.T)
-        J_f = row_indexer[col_ind_global].T
-        # print(f'{J_f = }')
-
-        print(f'{J_c.shape = }')
-        print(f'{J_f.shape = }')
-        J_l = delete_from_csr(J_c.tocsr(), col_indices=col_ind_local + col_ind_global)
-        print(f'{J_l.shape = }')
-    
-    else:
-        # print(f'{col_ind["P[k1]"] = }')
-        J_c = J.tocsc()
-        row_indexer = SparseRowIndexer(J_c.T)
-        J_f = row_indexer[[v for v in col_ind.values()]].T
-        J_l = delete_from_csr(J_c.tocsr(), col_indices=col_ind.values())
-        
-        print(f'{J_c.shape = }')
-        print(f'{J_f.shape = }')
-        print(f'{J_l.shape = }')
-        
-    #col_ind_global = [300, 301]
-    #grad = grad.loc[col_ind_global].values
-    # print(f'{grad = }')
-    # print(f'{global_set = }')
-    n_free = len(global_set)
-    jf = pd.DataFrame(J_f.todense())
-    jl = pd.DataFrame(J_l.todense())
-    
-    
-    from scipy.sparse import csc_matrix
-    # Hc = csc_matrix(H)
-    # for i, j in zip(*Hc.nonzero()):
-        # print(f'({i}, {j}), {hd[i,j]})')
-        
-    
-    # Hc = csc_matrix(J_f)
-    # hd = J_f.todense()
-    # for i, j in zip(*Hc.nonzero()):
-    #     print(f'({i}, {j}), {hd[i,j]})')
-    # print(f'{J_f = }')
-    # print(f'{J_l = }')
-    
-    #%%
-    # a = csc_matrix(H)
-    
-    # df = pd.DataFrame()
-    # rows = a.nonzero()[0]
-    # cols = a.nonzero()[1]
-    
-    # df['cols'] = cols
-    # df['rows'] = rows
-    
-    # vals = []
-    # for i in range(len(cols)):
-    #     vals.append(a[rows[i], cols[i]])
-        
-    # df['vals'] = vals
-    
-    # df.to_csv('csc_H.csv')
-    
-    
-    
-    
-    #%%
-    
-    
-    # jf.to_csv('k_aug_jf.csv')
-    # jl.to_csv('k_aug_jl.csv')
-    
-    # print(f'{jf = }')
-    # print(f'{jl = }')
-    print(f'{H.shape = }')
-    #print(f'{col_ind = }')
-    
-    h = H.todense()
-    #print(f'{h[300:302,300:302] = }')
-    
-    reduced_hessian, Z_mat = _reduced_hessian_matrix(J_f, J_l, H, col_ind, n_free)
-
-    print(f'{reduced_hessian.shape = }')
-
-    #"In testing use this
-
-    #print(f'{reduced_hessian = }')
-
-    #"
-
-    # if not gradients:
-    #     return reduced_hessian
-    # else:
-    return reduced_hessian, grad, Z_mat, H
-
-def _reduced_hessian_matrix(F, L, H, col_ind, n_free):
-    """This calculates the reduced hessian by calculating the null-space based
-    on the constraints
-
-    :param csr_matrix F: Rows of the Jacobian related to fixed parameters
-    :param csr_matrix L: The remainder of the Jacobian without parameters
-    :param csr_matrix H: The sparse Hessian
-    :param list col_ind: indices of columns with fixed parameters
-    
-    :return: sparse version of the reduced Hessian
-    :rtype: csr_matrix
-
-    """
-    from scipy.sparse.linalg import spsolve
-    
-    print(type(col_ind))
-    #print(len(col_ind)
-    
-    if isinstance(col_ind, list):
-        col_ind_dict = col_ind[0]
-        col_ind_global = [v for v in col_ind[0].values()]
-        col_ind_local = [v for v in col_ind[1].values()]
-    else:
-        col_ind_dict = col_ind
-        col_ind_global = [v for v in col_ind.values()]
-        col_ind_local = []
-    
-    n = H.shape[0]
-    
-    # This is needed for C and S
-    n_free = n - F.shape[0] - len(col_ind_local)
-    
-    print(f'{n_free = }')
-    
-    
-    
-    #col_ind = {'P[k1]': 1794}
-    
-    #n_free = len(col_ind)
-    
-    #col_ind_vals = [v for v in col_ind.values()]
-    # print(f'{col_ind = }')
-    # print(f'{n_free = }')
-    
-    #print(f'{n = }')
-    #print(f'{n_free = }')
-    # print(f'{F = }')
-    # print(f'{L = }')
-    
-    
-    # You need to get the correct values for the H and J here! Figure out what
-    # needs to be done with the local variables! Write this down!
-
-    col_ind_left = list(set(range(n)).difference(set(col_ind_global)).difference(set(col_ind_local)))
-    col_ind_left.sort()
-    
-    print(f'{len(col_ind_left) = }')
-    #print(f'{n_free = }')
-    
-    #n_free = 1
-    Z = np.zeros([n, n_free])
-    print(f'{Z.shape = }')
-    #print(f'{col_ind_vals = }')
-    #print(len(col_ind_vals))
-    
-    # Eror occurs here ValueError: shape mismatch: value array of shape (2,2) 
-    # could not be broadcast to indexing result of shape (1202,2)
-    
-    # print(f'{col_ind_vals = }')
-    
-    print(f'{len(col_ind_global) = }')
-    print(f'{len(col_ind_local) = }')
-    
-    Z[col_ind_global, :] = np.eye(n_free)
-    Z[col_ind_local, :] = np.zeros((len(col_ind_local), n_free))
-
-    X = spsolve(L.tocsc(), -F.tocsc())
-
-    print(f'{X.shape = }')
-    print(f'{X = }')
-
-    if isinstance(X, csc_matrix):
-        Z[col_ind_left, :] = X.todense()
-    else:
-        Z[col_ind_left, :] = X.reshape(-1, 1)
-
-    #print(f'{Z = }')
-
-    Z_mat = coo_matrix(np.mat(Z)).tocsr()
-    Z_mat_T = coo_matrix(np.mat(Z).T).tocsr()
-    Hess = H.tocsr()
-    reduced_hessian = Z_mat_T * Hess * Z_mat
-
-    # print()
-    # print('%' * 100)
-    # print(f'{type(reduced_hessian) = }')
-    # print('%' * 100)
-
-    # print(f'{reduced_hessian.todense() = }')
-
-    labels = [p for p in col_ind_dict.keys()]
-    #print(f'{labels = }')
-
-    df_rh = pd.DataFrame(reduced_hessian.todense(), columns=labels, index=labels)
-    
-    #print(f'{df_rh = }')
-
-    return df_rh, Z_mat
-
-    #return reduced_hessian.todense(), Z_mat
-
-
-# def calculate_inverse_hr(size, col_ind, global_set=[], matrices=None, spectral=True):
-#     """Calculates the inverse of the reduced Hessian using KKT info (k_aug)
-    
-#     :return H_use: The inverse of the reduced Hessian (parameter rows) 
-#     :rtype: numpy.ndarray
-    
-#     """
-#     reduced_hessian, grad, Z, H = _build_reduced_hessian(size, col_ind, global_set=global_set, matrices=matrices)
-#     covariance_matrix = np.linalg.inv(reduced_hessian)
-#     df_covariance_matrix = pd.DataFrame(covariance_matrix, columns=reduced_hessian.columns, index=reduced_hessian.index)
-#     labels = ['P[k1]', 'P[k2]']
-    
-#     covariance_matrix_reduced = covariance_matrix
-#     if spectral:
-#         df_covariance_matrix_reduced = df_covariance_matrix.loc[labels, :]
-#         covariance_matrix_reduced = df_covariance_matrix_reduced.values
-    
-#     #if not as_df:
-#     #    return covariance_matrix, covariance_matrix_reduced
-#     #else:
-#     #    return df_covariance_matrix, df_covariance_matrix_reduced
-#     df_covariance_matrix.to_csv('cov_mat_full_kaug')
-    
-    
-#     return covariance_matrix, Z
     
 def get_duals_k_aug(model_object, constraint_name, param_name):
     
@@ -1395,7 +880,7 @@ def bounds_modification_nlp(nlp_object, H, global_param_index):
     return _H
 
 
-def calculate_reduced_hessian(H, J, index_list, global_param_objs, as_df=True, debug=True):
+def calculate_reduced_hessian(H, J, index_list, global_param_objs, as_df=True, debug=False):
     """Final method for calculating the reduced Hessian
     
     """
@@ -1407,13 +892,13 @@ def calculate_reduced_hessian(H, J, index_list, global_param_objs, as_df=True, d
     J_f = row_indexer[global_param_index].T
     J_l = delete_from_csr(J_c.tocsr(), col_indices=all_param_index) 
     
-    # if debug:
-    # print(f'{J.shape = }')
-    # print(f'{H.shape = }')
-    # print(f'{J_c.shape = }')
-    # print(f'{J_f.shape = }')
-    # print(f'{J_l.shape = }')
-    # print(f'{J_f = }')
+    if debug:
+        print(f'{J.shape = }')
+        print(f'{H.shape = }')
+        print(f'{J_c.shape = }')
+        print(f'{J_f.shape = }')
+        print(f'{J_l.shape = }')
+        print(f'{J_f = }')
     
     n_free = len(global_param_index)
     n = H.shape[0]
@@ -1527,6 +1012,7 @@ def optimize_model(model, solver_options=None, nlp_object=None, return_nlp=True,
     
     """
     solver = SolverFactory(solver_path('ipopt'))
+    #solver = check_libs(solver)
     
     if solver_options is None:
         solver_options = {'linear_solver': 'ma57'}
@@ -1535,7 +1021,7 @@ def optimize_model(model, solver_options=None, nlp_object=None, return_nlp=True,
         for k, v in solver_options.items():
             solver.options[k] = v
     
-    solver_kwargs = {'tee': debug}
+    solver_kwargs = {'tee': True}
     if files:
         
         solver_kwargs['logfile'] = "opt_model_k_aug"
@@ -1550,7 +1036,7 @@ def optimize_model(model, solver_options=None, nlp_object=None, return_nlp=True,
     if return_nlp:
         nlp_object = PyomoNLP(model)
     
-    return nlp_object, solver
+    return nlp_object, solver, model
 
 
 def optimize_model_cyipopt(nlp_object, solver_options=None):
@@ -1561,19 +1047,22 @@ def optimize_model_cyipopt(nlp_object, solver_options=None):
     if nlp_object is None:
         raise ValueError('The ProjectedNLP object needs to be provided')
         
+    solver_settings = SolverSettings()
     if solver_options is None:
         solver_options = {
             'linear_solver': 'ma57',
             }
-        if __settings.general.hsllib is not None:
-            solver_options['hsllib'] = __settings.general.hsllib
+        
+    if solver_settings.custom_solvers_lib['hsllib'] is not None:
+        solver_options['hsllib'] = solver_settings.custom_solvers_lib['hsllib']
         
     cy_nlp = CyIpoptNLP(nlp_object)
     csolve = CyIpoptSolver(cy_nlp, 
                            options = solver_options,
                            )
     
-    x, info = csolve.solve(tee=False)
+    x, info = csolve.solve(tee=True)
+    nlp_object._original_nlp.set_duals(info['x'])
     nlp_object._original_nlp.set_duals(info['mult_g'])
     nlp_object._original_nlp.load_state_into_pyomo(
                 bound_multipliers=(info['mult_x_L'], info['mult_x_U']))
