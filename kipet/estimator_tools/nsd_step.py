@@ -10,9 +10,6 @@ from operator import index
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from pyomo.contrib.pynumero.interfaces.pyomo_nlp import PyomoNLP
-from pyomo.contrib.pynumero.interfaces.nlp_projections import ProjectedNLP
-from pyomo.contrib.pynumero.algorithms.solvers.cyipopt_solver import CyIpoptSolver, CyIpoptNLP
 
 from pyomo.environ import SolverFactory, Suffix, ConstraintList, VarList
 from scipy.sparse.linalg import spsolve
@@ -21,7 +18,7 @@ from scipy.sparse import coo_matrix, csr_matrix, csc_matrix, triu, lil_matrix, b
 # Kipet library imports
 from kipet.general_settings.variable_names import VariableNames
 from kipet.model_tools.pyomo_model_tools import convert
-from kipet.general_settings.settings import solver_path
+from kipet.general_settings.solver_settings import solver_path
 import kipet.estimator_tools.reduced_hessian_methods as rhm
 from kipet.estimator_tools.results_object import ResultsObject
     
@@ -83,7 +80,8 @@ class NSD_Model():
         """
         self.r_model.start_parameter_manager(self.model_vars)
         self.global_parameter_set, self.local_parameter_set = self.r_model.globals_locals
-        rhm.prepare_global_constraints(self.model, self.global_parameter_set, self.local_parameter_set, use_cyipopt=self.use_cyipopt)
+        self.constraint_map = rhm.prepare_global_constraints(self.model, self.global_parameter_set, self.local_parameter_set, use_cyipopt=self.use_cyipopt)
+        self.reverse_constraint_map = {v: k for k, v in self.constraint_map.items()}
         self.r_model._create_pynumero_model_object()
         self.model_object_lists = rhm.generate_parameter_object_lists(self.r_model)
         
@@ -142,7 +140,7 @@ class NSD_Model():
             self.nlp_object, info = rhm.optimize_model_cyipopt(self.projected_nlp)
         
         else:
-            self.nlp, solver = rhm.optimize_model(self.model, files=False, debug=self.debug)
+            self.nlp, solver, opt_model = rhm.optimize_model(self.model, files=False, debug=self.debug)
             self.nlp_object = self.nlp
             
         if self.index_list is None:
