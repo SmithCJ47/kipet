@@ -15,6 +15,8 @@ def add_inputs(est_object, kwds):
     :return: None
 
     """
+    print("Adding additional inputs")
+    
     est_object.fixedtraj = kwds.pop("fixedtraj", False)
     est_object.fixedy = kwds.pop("fixedy", False)
     est_object.inputs_sub = kwds.pop("inputs_sub", None)
