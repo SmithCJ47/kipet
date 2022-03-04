@@ -111,6 +111,15 @@ class TemplateBuilder(object):
         self._model_bounds = self._concentration_bounds
 
 
+    def set_conc_bounds(self, bounds):
+        
+        self._concentration_bounds = bounds
+        self._model_bounds = self._concentration_bounds
+        
+    def set_spec_bounds(self, bounds):
+        
+        self._spectral_bounds = bounds
+        
     def add_state_variance(self, sigma_dict):
         """Provide a variance for the measured states
         
@@ -1200,43 +1209,13 @@ class TemplateBuilder(object):
         
         if self.has_spectral_data():    
             
-            # if hasattr(model, 'abs_components'):
-            #     model.del_component('abs_components')
-            
-            # self._is_non_abs_set = True
-            
-            # print(f'{non_abs_list = }')
-            
-            # self._non_absorbing = [] if non_abs_list is None else non_abs_list
-            # #model.add_component('non_absorbing', Set(initialize=self._non_absorbing))
-
-            # # Exclude non absorbing species from S matrix and create subset Cs of C:
-            # #model.add_component('abs_components_names', Set())
-            
-            # set_all_components = set(model.mixture_components)
-            # set_non_abs_components = set(self._non_absorbing)
-            # set_abs_components = set_all_components.difference(set_non_abs_components)
-            
-            # list_abs_components = sorted(list(set_abs_components))
-            
-            # model.add_component('abs_components', Set(initialize=list_abs_components))
-            
-            
-            print(f'{self._non_absorbing = }')
-            
             self.set_non_absorbing_species(model, self._non_absorbing, check=False)
-            print(f'{self._non_absorbing = }')
-            #if self._is_non_abs_set:
             if self._non_absorbing is not None:
-                
-                #print(f'{self._is_non_abs_set = }')
-                
                 setattr(model, self.__var.spectra_species, Var(model.meas_lambdas,
                                                                model.abs_components,
                                                                bounds=s_bounds,
                                                                initialize=1))
             else:
-                print(f'{self._is_non_abs_set = }')
                 setattr(model, self.__var.spectra_species, Var(model.meas_lambdas,
                                                                model.mixture_components,
                                                                bounds=s_bounds,
