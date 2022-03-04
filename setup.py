@@ -20,7 +20,7 @@ setup(
     long_description=readme,
     long_description_content_type='text/markdown',
     name='kipet',
-    version='1.0.651',
+    version='1.0.7',
     description='An all-in-one tool for fitting kinetic models using spectral and other state data',
     python_requires='==3.*,>=3.8.0',
     project_urls={
@@ -41,7 +41,7 @@ setup(
         "kipet": ["general_settings/*.yml"],
     },
     install_requires=[
-        'attrs==20.*,>=20.3.0', 'matplotlib==3.*,>=3.3.4',
+        'attrs==20.*,>=20.3.0', 'matplotlib==3.*,>=3.3.4', 'networkx==2.7',
         'numpy==1.*,>=1.20.1', 'pandas==1.*,>=1.2.2', 'pint==0.*,>=0.16.1',
         'plotly==4.*,>=4.14.3', 'pyomo==6.*,>=6.2', 'pyyaml==5.*,>=5.4.1',
         'scipy==1.*,>=1.6.0', 'kaleido==0.2.1', 'jinja2==3.0.1', 'pytexit==0.3.4',
