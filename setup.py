@@ -38,7 +38,7 @@ setup(
     ],
     package_dir={"": "."},
     package_data={
-        "kipet": ["*.yml"],
+        "kipet": ["general_settings/*.yml"],
     },
     install_requires=[
         'attrs==20.*,>=20.3.0', 'matplotlib==3.*,>=3.3.4',
@@ -48,9 +48,5 @@ setup(
     ],
     extras_require={"dev": ["pytest==5.*,>=5.2.0", "isort==5.*,>=5.8.0", "mypy>=0.812", "sphinx-rtd-theme==0.5.2"]},
     #include_package_data=True,
-    package_data = {
-        # If any package contains *.txt or *.rst files, include them:
-        '': ['*.yml'],
-        }
 )
 
