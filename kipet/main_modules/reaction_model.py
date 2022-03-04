@@ -10,8 +10,6 @@ import time
 # Third party imports
 import numpy as np
 import pandas as pd
-#from pyomo.core.base.var import IndexedVar
-#from pyomo.dae.diffvar import DerivativeVar
 from pyomo.environ import ConcreteModel, Set, Var
 from pyomo.environ import units as pyo_units
 
@@ -27,7 +25,6 @@ except:
 from kipet import __version__ as version_number
 import kipet.input_output.kipet_io as io
 from kipet.calculation_tools.interpolation import interpolate_trajectory
-#from kipet.calculation_tools.model_funs import step_fun
 from kipet.estimability_tools.estimability_analysis import EstimabilityAnalyzer
 from kipet.estimability_tools.reduced_hessian_parameter_selection import rhps_method, replace_non_estimable_parameters
 from kipet.estimator_tools.fe_initialization import FEInit
@@ -47,6 +44,7 @@ from kipet.model_components.expression import (AEExpressions, Expression,
                                                ODEExpressions)
 from kipet.calculation_tools.helper import DosingPoint
 from kipet.general_settings.settings import Settings
+from kipet.general_settings.solver_settings import SolverSettings
 from kipet.model_components.spectral_handler import SpectralData
 from kipet.general_settings.variable_names import VariableNames
 from kipet.calculation_tools.helper import AttrDict
@@ -58,6 +56,7 @@ from string import Template
  
 # Create a template that has placeholder for value of x
 header = Template('$estimator ($model_name)')
+solver_settings = SolverSettings()
 
 def extra_slots_subclass(base, *slots):
     
@@ -257,11 +256,18 @@ class ReactionModel(WavelengthSelectionMixins):
         self._all_states = []
         self._beer_lambert_law_mode = None
         self._is_simulation = False
+        self.device_variance = None
         
         if model is not None:
             self._copy_from_model(model)
 
-        
+        self.solver_settings = solver_settings
+        # if solver_settings.custom_solvers.ipopt is None:
+        #     if solver_settings.custom_solvers_lib['hsllib'] is not None:
+        #         self.settings.solver.update(**solver_settings.use_hsllib())
+        #     else:
+        #         print('No HSL libraries found for Ipopt used in CyIpopt')    
+
     def __repr__(self):
         
         # m = 20
@@ -1201,6 +1207,9 @@ class ReactionModel(WavelengthSelectionMixins):
         and passes them in the correct manner to the TemplateBuilder
         
         """
+        self._builder.set_conc_bounds((self.settings.general.concentration_lb, None))
+        self._builder.set_spec_bounds((self.settings.general.spectral_lb, None))
+        
         if not self._template_populated:# or kwargs['estimator'] == 'p_estimator':
         
             with_data = kwargs.get('with_data', True)
@@ -1568,9 +1577,6 @@ class ReactionModel(WavelengthSelectionMixins):
                     ignore_model=True)
                 )
         model = getattr(self, model_name)
-        
-        print('MOSD DONE')
-                
         vars_fixed = []
         opt_vars = self.__var.optimization_variables
         for var in opt_vars:
@@ -2041,9 +2047,24 @@ class ReactionModel(WavelengthSelectionMixins):
 
         """Initializes the VarianceEstimator object for the ReactionModel"""
 
+        #self.device_variance = 3e-5
         # Check if all component variances are given; if not run VarianceEstimator
         has_spectral_data = self.spectra is not None
-        has_all_variances = self.components.has_all_variances
+        
+        # cases: conc with all variances, spec with all variances and deivce,
+        # spec with all comp and no device, spec with no comp and device, spec with no variances
+        
+        if has_spectral_data:
+            # check device and component variances
+            if self.device_variance is None:
+                has_all_variances = False
+            elif self.device_variance is not None:
+                self.variances['device'] = self.device_variance
+                has_all_variances = self.components.has_all_variances
+        else:
+            #concentration only
+            has_all_variances = self.components.has_all_variances
+        
         method = self.settings.variance_estimator.method
         head = header.substitute(estimator='Variance Estimator', model_name=self.name)
         
@@ -2105,8 +2126,9 @@ class ReactionModel(WavelengthSelectionMixins):
         self._create_estimator(estimator='p_estimator')
         
         setattr(self.p_estimator, 'ncp', self.settings.collocation.ncp)
+        
         variances = {k: v if v else 1 for k, v in self.components.variances.items()}
-        self.variances = variances
+        self.variances.update(variances)
         
         # The VE results can be used to initialize the PE
         if 'v_estimator' in self.results_dict:
@@ -2187,7 +2209,7 @@ class ReactionModel(WavelengthSelectionMixins):
         # Check if all needed data for optimization available
         #if not self._allow_optimization:
         #    raise ValueError('The model is incomplete for parameter optimization')
-        
+        self.direct_sigma_dict = None
         # Some settings are required together, this method checks this
         self._update_related_settings()
         if not no_ve:
@@ -2242,13 +2264,13 @@ class ReactionModel(WavelengthSelectionMixins):
             
         if estimator == 'v_estimator':
             
-            import time
-            start = time.time()
+            # import time
+            # start = time.time()
             
             self.results_dict[estimator] = getattr(self, estimator).run_opt(*args, **kwargs)
         
-            end = time.time()
-            print(f'VE time = {end - start}')
+            # end = time.time()
+            #print(f'VE time = {end - start}')
         
         else:
             variances = getattr(self, estimator).set_up(*args, **kwargs)
@@ -2691,8 +2713,6 @@ class ReactionModel(WavelengthSelectionMixins):
         dr = self._create_stoich_dataframe()
         comps = self.components.names
         
-        print(f'{dr = }')
-        
         # Check the input
         _is_comp = True
         _is_reaction = True
@@ -2715,8 +2735,6 @@ class ReactionModel(WavelengthSelectionMixins):
 
         else:
             for comp, s_list in St.items():
-                
-                print(f'{comp = }, {s_list = }')
                 dr.loc[comp, :] = s_list
 
         self.St = dr
