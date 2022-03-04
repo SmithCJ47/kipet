@@ -20,7 +20,7 @@ setup(
     long_description=readme,
     long_description_content_type='text/markdown',
     name='kipet',
-    version='1.0.65',
+    version='1.0.651',
     description='An all-in-one tool for fitting kinetic models using spectral and other state data',
     python_requires='==3.*,>=3.8.0',
     project_urls={
@@ -47,6 +47,9 @@ setup(
         'scipy==1.*,>=1.6.0', 'kaleido==0.2.1', 'jinja2==3.0.1', 'pytexit==0.3.4',
     ],
     extras_require={"dev": ["pytest==5.*,>=5.2.0", "isort==5.*,>=5.8.0", "mypy>=0.812", "sphinx-rtd-theme==0.5.2"]},
-    include_package_data=True,
+    #include_package_data=True,
+    package_data = {
+        # If any package contains *.txt or *.rst files, include them:
+        '': ['*.yml'],
 )
 
