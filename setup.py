@@ -20,7 +20,7 @@ setup(
     long_description=readme,
     long_description_content_type='text/markdown',
     name='kipet',
-    version='1.0.7',
+    version='1.0.71',
     description='An all-in-one tool for fitting kinetic models using spectral and other state data',
     python_requires='==3.*,>=3.8.0',
     project_urls={
