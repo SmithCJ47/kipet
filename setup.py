@@ -24,7 +24,7 @@ setup(
     description='An all-in-one tool for fitting kinetic models using spectral and other state data',
     python_requires='==3.*,>=3.8.0',
     project_urls={
-        "repository": "https://github.com/salvadorgarciamunoz/kipet"},
+        "repository": "https://github.com/kwmcbride/kipet"},
     author='Kevin McBride, Christina Schenk, Michael Short, Jose Santiago Rodriguez, David M. Thierry, Salvador Garcia-Munoz, Lorenz T. Biegler',
     author_email='kevin.w.mcbride.86@gmail.com',
     maintainer='Kevin McBride',
@@ -38,7 +38,7 @@ setup(
     ],
     package_dir={"": "."},
     package_data={
-        "kipet": ["general_settings/*.yml"],
+        "kipet": ["general_settings/*.yml", "visuals/templates/*"],
     },
     install_requires=[
         'attrs==20.*,>=20.3.0', 'matplotlib==3.*,>=3.3.4', 'networkx==2.7',
@@ -47,6 +47,5 @@ setup(
         'scipy==1.*,>=1.6.0', 'kaleido==0.2.1', 'jinja2==3.0.1', 'pytexit==0.3.4',
     ],
     extras_require={"dev": ["pytest==5.*,>=5.2.0", "isort==5.*,>=5.8.0", "mypy>=0.812", "sphinx-rtd-theme==0.5.2"]},
-    #include_package_data=True,
 )
 
