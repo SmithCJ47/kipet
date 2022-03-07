@@ -12,17 +12,20 @@ general:
   simulation_times: null
   add_volume_terms: true
   save_output: true
+  concentration_lb: 0
+  spectral_lb: 1.0e-6
 parameter_estimator:
   confidence: 0.95
   covariance: null
   estimability: false
   model_variance: true
   report_time: false
-  sim_init: false
+  sim_init: true
   solver: ipopt
   symbolic_solver_labels: false
   tee: true
   with_d_vars: false
+  from_sim: false
 simulator:
   method: fe
   solver: ipopt
@@ -47,3 +50,9 @@ variance_estimator:
   tee: true
   tolerance: 1.0e-05
   with_plots: false
+custom_solvers:
+  ipopt: null 
+  ipopt_sens: null
+  k_aug: null
+custom_solvers_lib:
+  hsllib: null

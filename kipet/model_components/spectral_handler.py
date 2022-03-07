@@ -145,7 +145,7 @@ class SpectralData:
         self.data[self.data < 0] = 0
         self._removed_negatives = True
 
-    def savitzky_golay(self, window=3, poly=2, deriv=0, in_place=True):
+    def savitzky_golay(self, window=5, poly=2, deriv=0, in_place=True):
         """Implementation of the Savitzky-Golay filter for Kipet. Used for smoothing data, with
         the option to also differentiate the data. Can be used to remove high-frequency noise.
         Creates a least-squares fit of data within each time window with a high order polynomial centered

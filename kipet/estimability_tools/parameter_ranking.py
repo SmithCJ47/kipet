@@ -23,7 +23,7 @@ def parameter_ratios(model_object, reduced_hessian, Se, epsilon=1e-16):
     red_hess_inv = np.dot(np.dot(eigenvectors, np.diag(1.0 / abs(eigenvalues))), eigenvectors.T)
     d = red_hess_inv.diagonal()
     d_sqrt = np.asarray(np.sqrt(d)).ravel()
-    rp = [d_sqrt[i] / max(epsilon, model_object.P[k].value) for i, k in enumerate(Se)]
+    rp = [d_sqrt[i] / max(epsilon, Se[k].pyomo_var.value) for i, k in enumerate(Se)]
 
     return rp, eigenvalues
 
@@ -43,7 +43,7 @@ def rank_parameters(model_object, reduced_hessian, param_list, epsilon=1e-16, et
     :rtype: tuple
 
     """
-    eigenvector_tolerance = 1e-15
+    eigenvector_tolerance = 1e-16
     parameter_tolerance = 1e-12
     squared_term_1 = 0
     squared_term_2 = 0
@@ -51,19 +51,28 @@ def rank_parameters(model_object, reduced_hessian, param_list, epsilon=1e-16, et
     Se_update = []
     M = {}
 
-    param_set = set(param_list)
+    param_set = set(param_list.keys())
     param_elim = set()
+    
+    print(f'{reduced_hessian = }')
+    
     eigenvalues, U = np.linalg.eigh(reduced_hessian)
+    eigenvectors = U
+
+    print(f'{eigenvalues = }')
+    #print(f'{param_list = }')
+    
+    p_names = [p.name for p in param_list.values()]
 
     df_eigs = pd.DataFrame(np.diag(eigenvalues),
-                           index=param_list,
-                           columns=[i for i, x in enumerate(param_list)])
+                           index=p_names,
+                           columns=[i for i, x in enumerate(p_names)])
     df_U_gj = pd.DataFrame(U,
-                           index=param_list,
-                           columns=[i for i, x in enumerate(param_list)])
+                           index=p_names,
+                           columns=[i for i, x in enumerate(p_names)])
 
     # Gauss-Jordan elimination
-    for i, p in enumerate(param_list):
+    for i, p in enumerate(p_names):
         piv_col = i
         piv_row = df_U_gj.loc[:, piv_col].abs().idxmax()
         piv = (piv_row, piv_col)
@@ -71,17 +80,18 @@ def rank_parameters(model_object, reduced_hessian, param_list, epsilon=1e-16, et
         M[i] = piv_row
         df_U_gj = _gauss_jordan_step(df_U_gj, piv, rows)
         param_elim.add(piv_row)
-        df_eigs.drop(index=[param_list[piv_col]], inplace=True)
+        df_eigs.drop(index=[p_names[piv_col]], inplace=True)
         df_eigs.drop(columns=[piv_col], inplace=True)
 
     # Parameter ranking
-    eigenvalues, eigenvectors = np.linalg.eigh(reduced_hessian)
+    #eigenvalues, eigenvectors = np.linalg.eigh(reduced_hessian)
     ranked_parameters = {k: M[abs(len(M) - 1 - k)] for k in M.keys()}
+    #print(f'{ranked_parameters = }')
 
     for k, v in ranked_parameters.items():
         name = v.split('[')[-1].split(']')[0]
         squared_term_1 += abs(1 / max(eigenvalues[-(k + 1)], parameter_tolerance))
-        squared_term_2 += (eta ** 2 * max(abs(model_object.P[name].value), epsilon) ** 2)
+        squared_term_2 += (eta ** 2 * max(abs(param_list[v].pyomo_var.value), epsilon) ** 2)
 
         if squared_term_1 >= squared_term_2:
             Sf_update.append(name)

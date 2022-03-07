@@ -20,13 +20,18 @@ def D_from_SC(model, results, sigma_d=0):
     :rtype: np.ndarray
 
     """
+    #%%
+    #model = r1.p_model
     
-    C = convert(model.C)
+    C = convert(model.Z)
     C = C.loc[:, [c for c in model.abs_components]]
     
     S = convert(model.S)
+    S = S.loc[:, [c for c in model.abs_components]]
     D = C @ S.T
 
+    #%%
+    
     if sigma_d > 0:
         d_noise = np.random.normal(np.zeros(D.shape), sigma_d)
         D += d_noise

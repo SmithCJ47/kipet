@@ -7,6 +7,7 @@ from pyomo.environ import Constraint, Objective, Param, Set, SolverFactory, Suff
 
 # KIPET library imports
 from kipet.estimator_tools.parameter_estimator import ParameterEstimator
+from kipet.general_settings.solver_settings import solver_path
 
 
 class EstimabilityAnalyzer(ParameterEstimator):
@@ -23,10 +24,12 @@ class EstimabilityAnalyzer(ParameterEstimator):
         simplified models
 
     """
-    def __init__(self, model):
+    def __init__(self, r_model, model='p_model'):
         """Initialization of the EstimabilityAnalyzer"""
-        super(EstimabilityAnalyzer, self).__init__(model)
+        super(EstimabilityAnalyzer, self).__init__(r_model,  model)
+        self.r_model = r_model
         self.param_ranks = dict()
+        
         
     def get_sensitivities_for_params(self, **kwds):
         """ Obtains the sensitivities (dsdp) using k_aug. This function only works for
@@ -220,7 +223,7 @@ class EstimabilityAnalyzer(ParameterEstimator):
         m.ipopt_zL_in.update(m.ipopt_zL_out)
         m.ipopt_zU_in.update(m.ipopt_zU_out) 
         
-        k_aug = SolverFactory('k_aug')
+        k_aug = SolverFactory(solver_path('k_aug'))
         k_aug.options['dsdp_mode'] = ""  #: sensitivity mode!
         #solve with k_aug in sensitivity mode
         k_aug.solve(m, tee=True)
@@ -304,6 +307,8 @@ class EstimabilityAnalyzer(ParameterEstimator):
                                        'variance dictionary to rank_params_yao')
         # k_aug is used to get the sensitivities. The full model is solved with dummy
         # parameters and variables at the initial values for the parameters
+        self.cloned_before_k_aug_r = self._reaction_model
+        
         self.cloned_before_k_aug = self.model.clone()
         dsdp, idx_to_param = self.get_sensitivities_for_params(tee=True, sigmasq=sigmas)
         nvars = np.size(dsdp,0)
@@ -617,7 +622,15 @@ class EstimabilityAnalyzer(ParameterEstimator):
                     cloned_full_model[count].P[v].setub(ub)
             # We then solve the Parameter estimaion problem for the SM
             options = dict()            
-            cloned_pestim[count] = ParameterEstimator(cloned_full_model[count])
+            
+            # This is the part that now fails due to the PE object initialization - perhaps clone the PE and
+            # ignore the fact that a new model is needed
+            print(f'{self.r_model.settings.parameter_estimator = }')
+            print(f'{sigmas = }')
+            self.r_model.settings.parameter_estimator.variances = sigmas
+            cloned_pestim[count] = ParameterEstimator(self.r_model, cloned_full_model[count])
+            cloned_pestim[count].set_up(**self.r_model.settings.parameter_estimator)
+            
             if count>=2:
                 if hasattr(results[count-1], 'Y'):
                     cloned_pestim[count].initialize_from_trajectory('Y', results[count - 1].Y)
@@ -636,10 +649,11 @@ class EstimabilityAnalyzer(ParameterEstimator):
                 cloned_pestim[count].initialize_from_trajectory('dZdt', results[count - 1].dZdt)
                 cloned_pestim[count].scale_variables_from_trajectory('dZdt', results[count - 1].dZdt)
 
-            results[count] = cloned_pestim[count].run_opt('ipopt',
-                                        tee=True,#False,
-                                        solver_opts = options,
-                                        variances=sigmas, symbolic_solver_labels=True
+            results[count] = cloned_pestim[count].run_opt(True, #'ipopt',
+                                        #tee=True,#False,
+                                        #solver_opts = options,
+                                        variances=sigmas, 
+                                        #symbolic_solver_labels=True,
                                         )
 
             # print('TC',TerminationCondition.optimal)

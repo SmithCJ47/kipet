@@ -37,6 +37,8 @@ colors += ['#4285F4', '#DB4437', '#F4B400', '#0F9D58',
                      '#185ABC', '#B31412', '#EA8600', '#137333',
                      '#d2e3fc', '#ceead6']
 
+colors *= 5
+
 # Use for making SVGs
 
 # plot_options = {
@@ -74,7 +76,7 @@ class PlotObject:
     :param bool jupyter: Indicates if the user is using a Jupyter notebook
     :param str filename: Optional file name for the plot
     """
-    def __init__(self, reaction_model=None, jupyter=False, filename=None, show=False):
+    def __init__(self, reaction_model=None, jupyter=False, filename=None, show=False, use_simulation=False):
         """Initialization of the PlotObject instance
 
         :param ReactionModel reaction_model: A ReactionModel instance
@@ -93,10 +95,13 @@ class PlotObject:
         if self.filename is not None:
             self.folder_name = self.filename
             
-        if self.reaction_model.models['p_model']:
+        if self.reaction_model.models['p_model'] and not use_simulation:
             self.results = self.reaction_model.results
-        else:
+        elif use_simulation:
             self.results = self.reaction_model.results_dict['simulator']
+            
+        else:
+            raise ValueError('The results are not specified properly')
             
 
     @staticmethod
@@ -209,7 +214,7 @@ class PlotObject:
         filename_html = chart_dir.joinpath(filename).as_posix() + '.html'
         #f not self.jupyter:
         
-        print(f'Plot saved as: {filename_html}')
+        #print(f'Plot saved as: {filename_html}')
            
         self.save_static_image = True
         if self.save_static_image:
@@ -307,10 +312,15 @@ class PlotObject:
         fig = go.Figure()
         use_spectral_format = False
         pred = getattr(self.results, 'Z')
+        
+        if hasattr(self.results, 'Y'):
+            cols = [col for col in getattr(self.results, 'Y').columns if col in self.reaction_model._all_components]    
+            pred = pred.join(getattr(self.results, 'Y')[cols])
+        
         if hasattr(self.results, 'Cm'):
             exp = getattr(self.results, 'Cm')
         elif hasattr(self.results, 'C'):
-            if self.reaction_model.models['_s_model'] and not self.reaction_model.models['v_model'] and not self.reaction_model.models['p_model']:
+            if self.reaction_model.models['s_model'] and not self.reaction_model.models['v_model'] and not self.reaction_model.models['p_model']:
                 exp = None
             else:
                 exp = getattr(self.results, 'C')
@@ -321,8 +331,14 @@ class PlotObject:
             self._state_plot(fig, col, pred, exp, use_spectral_format=use_spectral_format)
             self.color_num += 1
         self.color_num = 0
-        var_data = self.reaction_model.components[col]
-        state = f'{self.reaction_model.components[col].state}'.capitalize()
+        if col in self.reaction_model.components.names:
+            var_data = self.reaction_model.components[col]
+            state = self.reaction_model.components[col].state
+        else:
+            var_data = self.reaction_model.algebraics[col]
+            state = self.reaction_model.algebraics[col].state
+            
+        state = f'{state}'.capitalize()
         title = f'Model: {self.reaction_model.name} | Concentration Profiles'
         time_scale = f'Time [{self.reaction_model.unit_base.time}]'
 
@@ -557,6 +573,43 @@ class PlotObject:
         filename = self._fig_finishing(fig, pred, plot_name=f'concentration-residuals')
         return filename
     
+    
+    def _convert_C(self):
+        
+        Co = getattr(self.results, 'C')
+        
+        if self.reaction_model._beer_lambert_law_mode == 'linear':
+            
+            C = pd.DataFrame(np.zeros(Co.shape), columns=Co.columns, index=Co.index)
+            
+            for species in C.columns:               
+
+                for name, obj in self.reaction_model.p_model.bl_param.items():
+                    if name == 'b0':
+                        C.loc[:, species] += obj.value
+                    elif name.lstrip('b') == species:
+                        C.loc[:, species] += obj.value * Co.loc[:, species]
+            return C
+        
+        elif self.reaction_model._beer_lambert_law_mode == 'quadratic':
+            
+            
+            C = pd.DataFrame(np.zeros(Co.shape), columns=Co.columns, index=Co.index)
+            for species in C.columns:
+                for name, obj in self.reaction_model.p_model.bl_param.items():
+                    if name == 'b0':
+                        C.loc[:, species] += obj.value
+                    elif name.lstrip('b') == species:
+                        C.loc[:, species] += obj.value * Co.loc[:, species]
+                    elif name.lstrip('b').rstrip('_2') == species:
+                        C.loc[:, species] += obj.value * Co.loc[:, species]**2
+            return C
+            
+        else:
+            
+            return Co
+    
+    
     def _plot_D_residuals(self):
         """Plot state profiles
 
@@ -565,9 +618,8 @@ class PlotObject:
         """
         fig = go.Figure()
         use_spectral_format = False
-        
         exp = convert(self.reaction_model.p_model.D)
-        C = getattr(self.results, 'C')
+        C = self._convert_C()
         S = getattr(self.results, 'S')
         C = C.loc[:, S.columns]
         pred = C.dot(S.T)
@@ -665,10 +717,8 @@ class PlotObject:
         """
         fig = go.Figure()
         use_spectral_format = False
-       
         exp = convert(self.reaction_model.p_model.D)
-        
-        C = getattr(self.results, 'C')
+        C = self._convert_C()
         S = getattr(self.results, 'S')
         C = C.loc[:, S.columns]
         pred = C.dot(S.T)
@@ -743,7 +793,7 @@ class PlotObject:
             str_units = var_data.units
             
         if check_expr:
-            if var_data.name in self.reaction_model.alg_obj.exprs:
+            if hasattr(self.reaction_model, 'alg_obj') and var_data.name in self.reaction_model.alg_obj.exprs:
                 str_units = str(self.reaction_model.alg_obj.exprs[var_data.name].units)
             else:
                 if var_data.name in self.reaction_model.algebraics.names:

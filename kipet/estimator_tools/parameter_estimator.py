@@ -9,13 +9,15 @@ import time
 import numpy as np
 import pandas as pd
 from pyomo.environ import (
+    ConcreteModel,
     Constraint, 
     ConstraintList, 
     Objective,
     SolverFactory, 
     TerminationCondition, 
     value, 
-    Var)
+    Var,
+    VarList)
 
 # KIPET library imports
 from kipet.model_components.objectives import (
@@ -23,23 +25,34 @@ from kipet.model_components.objectives import (
     conc_objective)
 from kipet.estimator_tools.pyomo_simulator import PyomoSimulator
 from kipet.estimator_tools.reduced_hessian_methods import (
+    covariance_matrix_single_model,
     covariance_k_aug,
+    # covariance_pynumero,
     covariance_sipopt, 
-    define_free_parameters)
+    define_free_parameters,
+    add_warm_start_suffixes)
 from kipet.estimator_tools.results_object import ResultsObject
 from kipet.mixins.parameter_estimator_mixins import PEMixins
 from kipet.model_tools.pyomo_model_tools import convert
 from kipet.general_settings.variable_names import VariableNames
+from kipet.general_settings.solver_settings import solver_path
 
 
 class ParameterEstimator(PEMixins, PyomoSimulator):
 
     """Optimizer for parameter estimation"""
 
-    def __init__(self, model):
-        super(ParameterEstimator, self).__init__(model)
-
+    def __init__(self, reaction_model, model):
+        
+        if isinstance(model, str) and model in ['_model', 's_model', 'v_model', 'p_model']:
+            # use the specified model within the ReactionModel
+            super(ParameterEstimator, self).__init__(getattr(reaction_model, model))
+        elif isinstance(model, ConcreteModel):
+            # Use the provided model
+            super(ParameterEstimator, self).__init__(model)
+            
         self.__var = VariableNames()
+        self._reaction_model = reaction_model
 
         self.hessian = None
         self.cov = None
@@ -66,10 +79,15 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
             # self._n_huplc = len(self._list_huplcabs)
 
         self.n_val = self._n_components
+        self.nlp = self._reaction_model._nlp
         
         self.cov = None
             
-    def run_opt(self, solver, **kwds):
+        #self.model.conc_func_lb = ConstraintList()
+        #self.bl_params = VarList()
+
+    # Perhaps move this to the __init__
+    def set_up(self, solver, **kwds):                
 
         """ Solves parameter estimation problem.
 
@@ -103,6 +121,9 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         
         solver_opts = kwds.pop('solver_opts', dict())
         variances = kwds.pop('variances', dict())
+        scale_variance = kwds.pop('scale_variance', False)
+        min_variance = kwds.pop('min_variance', 1)
+        min_variance_global = kwds.pop('min_variance_global', None)
         tee = kwds.pop('tee', False)
         with_d_vars = kwds.pop('with_d_vars', False)
         covariance = kwds.pop('covariance', None)
@@ -118,7 +139,8 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         yfix = kwds.pop("yfix", None)
         yfixtraj = kwds.pop("yfixtraj", None)
 
-        jump = kwds.pop("jump", False)
+        jump = kwds.pop("jump", None)
+        solve = kwds.pop("solve", True)
         
         self.confidence = kwds.pop('confidence', None)
         if self.confidence is None:
@@ -128,9 +150,15 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         St = kwds.pop('St', dict())
         Z_in = kwds.pop('Z_in', dict())
 
-        self.solver = solver
+        self.solver = solver_path(solver)
+        self.tee = tee
+        
+        # These should really be defined in __init__ and not here
         self.covariance_method = covariance
         self.model_variance = model_variance
+        self.min_variance = min_variance
+        self.min_variance_global = min_variance_global
+        self.scale_variance = scale_variance
         self._estimability = estimability
 
         if not self.model.alltime.get_discretization_info():
@@ -153,6 +181,9 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         self.solver_opts = solver_opts
             
         if inputs_sub is not None:
+            
+            print(f'{inputs_sub = }')
+            
             from kipet.estimator_tools.additional_inputs import add_inputs
             
             add_kwargs = dict(
@@ -165,9 +196,14 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
             )
             add_inputs(self, add_kwargs)
         
-        if jump:
-            from kipet.estimator_tools.jumps_method import set_up_jumps
-            set_up_jumps(self.model, run_opt_kwargs)
+        if jump is not None:
+            
+            from kipet.estimator_tools.fe_initialization import FEInit
+            
+            fe_init_obj = FEInit(self.model, jump)
+            fe_init_obj.add_constraints()
+          
+            
             
         # # I am not sure if this is still needed...
         # active_objectives = [o for o in self.model.component_map(Objective, active=True)]        
@@ -178,20 +214,36 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         #     solver_results = opt.solve(self.model, tee=tee)
 
         #if self._spectra_given:
-        self.objective_value = self._solve_model(
+        # if hasattr(self.model, 'objective'):
+        #     self.model.del_component('objective')
+            
+        self._add_objective(
             variances,
             tee=tee,
             covariance=covariance,
             with_d_vars=with_d_vars,
             **kwds)
+        
+        if not hasattr(self.model, 'ipopt_zL_out'):
+            add_warm_start_suffixes(self.model)
+        
+        return variances
+        
+    def run_opt(self, solve, variances):
+        
+        if solve:
+            
+            self.objective_value = self.optimize(self.model, variances)
+    
+           # if report_time:
+           #     end = time.time()
+           #     print("Total execution time in seconds for variance estimation:", end - start)
+            return self._get_results()
+        
+        else:
+            return None
 
-        if report_time:
-            end = time.time()
-            print("Total execution time in seconds for variance estimation:", end - start)
-
-        return self._get_results()
-
-    def _get_results(self):
+    def _get_results(self, display=True):
         """Removed results unit from function
 
         :return: The formatted results
@@ -199,10 +251,17 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
 
         """
         results = ResultsObject()
-        results.objective = self.objective_value
+        
+        if hasattr(self, 'objective_value'):
+            results.objective = self.objective_value
+        else:
+            results.objective = None
+        
         results.parameter_covariance = self.cov
         results.load_from_pyomo_model(self.model)
-        results.show_parameters(self.confidence)
+        
+        if display:
+            results.show_parameters(self.confidence)
 
         if self._spectra_given:
             from kipet.calculation_tools.beer_lambert import D_from_SC
@@ -213,18 +272,121 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         else:
             setattr(results, self.__var.model_parameter, {name: getattr(self.model, self.__var.model_parameter)[name].value for name in self.model.parameter_names})
 
-        if self.termination_condition!=None and self.termination_condition!=TerminationCondition.optimal:
+        if self.termination_condition != None and self.termination_condition != TerminationCondition.optimal:
             raise Exception("The current iteration was unsuccessful.")
         else:
             if self._estimability == True:
                 return self.hessian, results
             else:
                 return results
-
-        return results
             
-    def _solve_model(self, sigma_sq, **kwds):
-        """Main function to getup the objective and perform the parameter estimation 
+
+    def _add_linear_bl_terms(self, t, k):
+    
+        expr = 0
+        C = getattr(self.model, 'C')
+        comps = self.comps['unknown_absorbance']
+        
+        for name, obj in self.model.bl_param.items():
+            
+            if name == 'b0':
+                expr += 0
+            elif name.lstrip('b') == k:
+                expr += obj * C[t, k]        
+        
+        return expr
+
+
+    def _add_quadratic_bl_terms(self, t, k, interactions=False):
+    
+        expr = 0
+        
+        C = getattr(self.model, 'C')
+        comps = self.comps['unknown_absorbance']
+        
+        # It will have these already
+        params = [f'b{c}_2' for c in comps]
+        
+        for name, obj in self.model.bl_param.items():
+            if name in params:
+                if name.lstrip('b').rstrip('_2') == k:
+                    expr += obj * C[t, k]**2
+                    
+        # if interactions:
+        #     import itertools
+        #     combinations = list(itertools.combinations(comps, 2))
+        #     params_comb = [f'b{c[0]}-{c[1]}' for c in combinations]
+            
+        #     for name, obj in self.model.bl_param.items():
+        #         if name in params_comb:
+                    
+        #             comp1, comp2 = name.lstrip('b').split('-')
+                    
+        #             if name.lstrip('b').rstrip('_2') == k:
+        #                 expr += obj * C[t, k]**2
+            
+        
+        return expr
+
+
+    def _beer_lambert_mod(self, t, k):
+        
+        eps = 1e-12
+        param_bounds = (1, 1 + eps)
+        linear_initial_value = 1
+        quad_param_bounds = (0, 1e2)
+        quad_initial_value = 1e-2
+        self.bl_param_same = False
+        
+        C = getattr(self.model, 'C')
+        Z = getattr(self.model, 'Z')
+        comps = self.comps['unknown_absorbance']
+        
+        if self._reaction_model._beer_lambert_law_mode is None:
+            
+            expr = C[t, k]
+        
+        elif self._reaction_model._beer_lambert_law_mode == 'linear':
+            
+            if not hasattr(self.model, 'bl_param'):
+                params = ['b0']
+                params += [f'b{c}' for c in comps]
+                setattr(self.model, 'bl_param', Var(params, bounds=(param_bounds[0], param_bounds[1]), initialize=linear_initial_value))
+                self.model.bl_param['b0'].set_value(0)
+                self.model.bl_param['b0'].fix()
+                
+                # if self.bl_param_same:
+                #     setattr(self.model, 'bl_param_linear_constraint', )
+            
+            expr = self._add_linear_bl_terms(t, k)
+            
+        # No interactions
+        elif self._reaction_model._beer_lambert_law_mode == 'quadratic':
+        
+            if not hasattr(self.model, 'bl_param'):
+                params = ['b0']
+                params += [f'b{c}' for c in comps]
+                sqr_params = [f'b{c}_2' for c in comps]
+                params += sqr_params
+                setattr(self.model, 'bl_param', Var(params, bounds=(param_bounds[0], param_bounds[1]), initialize=linear_initial_value))
+                self.model.bl_param['b0'].set_value(0)
+                self.model.bl_param['b0'].fix()      
+        
+                for param in sqr_params:
+                    self.model.bl_param[param].set_value(quad_initial_value)
+                    self.model.bl_param[param].setlb(quad_param_bounds[0])
+                    self.model.bl_param[param].setub(quad_param_bounds[1])
+                    
+        
+            expr = self._add_linear_bl_terms(t, k)    
+            expr += self._add_quadratic_bl_terms(t, k, interactions=False)
+            
+        return expr
+        
+        
+            
+    def _add_objective(self, sigma_sq, **kwds):
+        """Main function to setup the objective and perform the parameter estimation 
 
            This method is not intended to be used by users directly
 
@@ -250,8 +412,25 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         model = self.model
         model.objective = Objective(expr=0)
         
+        #print(f'{self.min_variance = }')
+        
+        #print(f'{sigma_sq = }')
+        
+        variance_level = 'local'
+        variance_divider = self.min_variance
+        
+        if self.min_variance_global is not None:
+            variance_level = 'global'
+            variance_divider = self.min_variance_global
+        
+        if self.scale_variance:
+            print(f'# ParameterEstimator: Scaling the variances using {variance_level} variance equal to {variance_divider:.4e}')
+            sigma_sq = {k : v/variance_divider for k, v in sigma_sq.items()}
+    
+        self.use_bl_func = False
         if self._spectra_given:
-
+            self.use_bl_func = True
+           
             all_sigma_specified = True
     
             if isinstance(sigma_sq, dict): 
@@ -263,7 +442,7 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
     
                 if not 'device' in sigma_sq.keys():
                     all_sigma_specified = False
-                    sigma_sq['device'] = 1.0
+                    sigma_sq['device'] = 1e-4
     
             elif isinstance(sigma_sq, float):
                 sigma_dev = sigma_sq
@@ -281,17 +460,17 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
             if self.G_contribution == 'time_variant_G':
                 model.qr_end_cons = Constraint(rule = _qr_end_constraint)
             
-            
             if with_d_vars and self.model_variance:
                 model.D_bar = Var(model.times_spectral, model.meas_lambdas)
                 
                 def rule_D_bar(model, t, l):
                     if hasattr(model, 'huplc_absorbing') and hasattr(model, 'solid_spec_arg1'):
                         return model.D_bar[t, l] == sum(
-                            getattr(model, 'C')[t, k] * model.S[l, k] for k in self.comps['unknown_absorbance'] if k not in model.solid_spec_arg1)
+                            self._beer_lambert_mod(t, k) * model.S[l, k] for k in self.comps['unknown_absorbance'] if k not in model.solid_spec_arg1)
                     else:
-                        return model.D_bar[t, l] == sum(getattr(model, 'C')[t, k] * model.S[l, k] for k in self.comps['unknown_absorbance'])
-    
+                        #return model.D_bar[t, l] == sum(getattr(model, 'C')[t, k] * model.S[l, k] for k in self.comps['unknown_absorbance'])
+                        return model.D_bar[t, l] == sum(self._beer_lambert_mod(t, k) * model.S[l, k] for k in self.comps['unknown_absorbance'])
+
                 model.D_bar_constraint = Constraint(model.times_spectral,
                                                     model.meas_lambdas,
                                                     rule=rule_D_bar)
@@ -325,6 +504,10 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
             self._custom_term(model)
             self._penalty_term(model, penaltyparamcon)
          
+            
+        # print('Objective')
+        # print(model.objective.expr.to_string())
+            
         # # Break up the objective
         # custom_weight = 1
         # if hasattr(model, 'custom_obj'):
@@ -346,8 +529,20 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         #     weights = kwds.pop('weights', [1.0, 1.0, 1.0])
         # else:
         #     weights = kwds.pop('weights', [1.0, 1.0])
+        return None
+        
+            
+    def _solve_model(self, sigma_sq):
+        """Main function to perform the parameter estimation 
 
-        obj_val = self.optimize(model, sigma_sq)
+           This method is not intended to be used by users directly
+
+        :param dict sigma_sq: variances
+
+        :return: None
+
+        """
+        obj_val = self.optimize(self.model, sigma_sq)
         
         return obj_val
 
@@ -362,9 +557,8 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         :return: None
         
         """
-
         obj=0
-        obj += conc_objective(model, variance=sigma_sq, source=source)  
+        obj += conc_objective(model, variance=sigma_sq, source=source)
         model.objective.expr += obj
     
         return None
@@ -456,7 +650,7 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
                 if len(ppenalty_dict)!=len(ppenalty_weights):
                     raise RuntimeError(
                         'For every penalty term a weight must be defined.')
-                if ppenalty_dict.keys()!=ppenalty_weights.keys():
+                if ppenalty_dict.keys() != ppenalty_weights.keys():
                     raise RuntimeError(
                         'Check the parameter names in ppenalty_weights and ppenalty_dict again. They must match.')
                 else:
@@ -495,21 +689,34 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
                         if hasattr(model, 'huplc_absorbing') and hasattr(model, 'solid_spec_arg1'):
                             D_bar = sum(model.C[t, k] * model.S[l, k] for k in component_set if k not in model.solid_spec_arg1)
                         else:
-                            D_bar = sum(model.C[t, k] * model.S[l, k] for k in component_set)
+                            #D_bar = sum(model.C[t, k] * model.S[l, k] for k in component_set)
+                            # D_bar = sum((model.bl_param['A']*getattr(model, 'C')[t, k] + model.bl_param['B']) * model.S[l, k] for k in component_set)
+                            D_bar = sum(self._beer_lambert_mod(t, k) * model.S[l, k] for k in component_set)
+                            # for k in component_set:
+                            #     # Here is where the BL is being implemented
+                            #     conc_expr = self._beer_lambert_mod(t, k)
+                            #     D_bar += conc_expr * model.S[l, k]
                 
                 if self.G_contribution == 'time_variant_G':
-                    expr += (model.D[t, l] - D_bar - model.qr[t]*model.g[l]) ** 2 / (sigma_sq['device'])
+                    expr += (model.D[t, l] - D_bar - model.qr[t]*model.g[l]) ** 2 #/ (sigma_sq['device'])
                 elif self.time_invariant_G_no_decompose:
-                    expr += (model.D[t, l] - D_bar - model.g[l]) ** 2 / (sigma_sq['device'])
+                    expr += (model.D[t, l] - D_bar - model.g[l]) ** 2 #/ (sigma_sq['device'])
                 else:
-                    expr += (model.D[t, l] - D_bar) ** 2 / (sigma_sq['device'])
+                    expr += (model.D[t, l] - D_bar) ** 2 #/ (sigma_sq['device'])
+                    
+        # for t in model.times_spectral:
+        #     for k in component_set:
+        #         conc_expr = self._beer_lambert_mod(t, k)
+        #         print(f'conc_expr')
+        #         print(conc_expr)
+        #         self.model.conc_func_lb.add(conc_expr >= 1e-20)
                    
-        model.objective.expr += expr
+        model.objective.expr += expr / (sigma_sq['device'])
             
         return None
     
     
-    def _regular_optimization(self, model):
+    def _regular_optimization(self, model, sigma_sq=None):
         """Optimize without the covariance.
         
         This is used for setting up the solver factory with ipopt for models
@@ -517,27 +724,133 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         step in solving models with k_aug.
         
         """
+        #number_of_variables = None
+        if not hasattr(self.model, 'ipopt_zL_out'):
+            add_warm_start_suffixes(model)
+        
         optimizer = SolverFactory(self.solver)
         for key, val in self.solver_opts.items():
             optimizer.options[key] = val
-        solver_results = optimizer.solve(model, tee=False, symbolic_solver_labels=True)
+        
+        # if self.covariance_method == 'ipopt_sens':
+            
+        #     from kipet.estimator_tools.reduced_hessian_methods import index_variable_mapping
+            
+        #     _tmpfile = "sipopt_red_hess"
+        #     components = self.comps['unknown_absorbance'], 
+        #     parameters = self.param_names_full
+            
+        #     index_to_variable = index_variable_mapping(model, components, parameters, None)
+        #     solver_results = optimizer.solve(
+        #             model,
+        #             tee=False,
+        #             logfile=_tmpfile,
+        #             report_timing=True,
+        #             symbolic_solver_labels=True,
+        #             keepfiles=True
+        #         )
+        #     number_of_variables = len(index_to_variable)
+            
+        # else:
+        solver_results = optimizer.solve(
+            model, 
+            tee=self.tee, 
+            symbolic_solver_labels=True
+        )
+        
+        self.solver_results = solver_results
         self._termination_problems(solver_results, optimizer)
     
+        if hasattr(self, 'nlp') and self.nlp is not None:
+            self.nlp.set_primals([var.value for var in self.nlp.get_pyomo_variables()])
+            self.nlp.set_duals(list(model.dual.values()))
+        
+        #if self.use_bl_func:
+        
+        # self.H = self.nlp.evaluate_hessian_lag()
+            # self.param_names_full += ['bl_param[b0]', 'bl_param[b1]']
+            # self.param_names += ['b0', 'b#1']
+        
+        
+        # if self.covariance_method is not None:
+        
+        #     if not hasattr(self.model, 'C'):
+        #         self.inv_hessian_reduced = covariance_matrix_single_model(self._reaction_model)
+        #         #self.inv_hessian, self.inv_hessian_reduced = covariance_pynumero(self.model, None, self.comps['unknown_absorbance'], self.param_names_full, nlp=self.nlp)
+        
+        #     else:
+        #         from kipet.estimator_tools.reduced_hessian_methods import compute_covariance
+        #         models_dict = {'reaction_model': self.model}
+        #         free_params = len(self.param_names)
+        #         variances = {'reaction_model': sigma_sq}
+        #         self.covariance_parameters = compute_covariance(models_dict, self.inv_hessian_reduced, free_params, variances)
+        #     # else:
+        #     #     self.covariance_parameters = self.inv_hessian_reduced
+                
+        #     if self.use_bl_func:
+        #         self.param_names.remove('b1')
+        #         self.param_names.remove('b0')
+            
+        #     self.cov = pd.DataFrame(self.covariance_parameters, index=self.param_names, columns=self.param_names)  
+
+        
+        
+        # if self.covariance_method is not None:
+        
+        #     print(f'{sigma_sq = }')
+        #     self.inv_hessian, self.inv_hessian_reduced = covariance_matrix_single_model(self._reaction_model, use_sigma=True, spectral=hasattr(self.model, 'C'))
+        #     #self.inv_hessian, self.inv_hessian_reduced = covariance_pynumero(self.model, None, self.comps['unknown_absorbance'], self.param_names_full, nlp=self.nlp)
+        
+        #     if hasattr(self.model, 'C'):
+        #         from kipet.estimator_tools.reduced_hessian_methods import compute_covariance
+        #         models_dict = {'reaction_model': self.model}
+        #         free_params = len(self.param_names)
+        #         variances = {'reaction_model': sigma_sq}
+        #         self.covariance_parameters = compute_covariance(models_dict, self.inv_hessian_reduced, free_params, variances)
+        #     else:
+        #         self.covariance_parameters = self.inv_hessian_reduced
+                
+        #     # if self.use_bl_func:
+        #     #     self.param_names.remove('b1')
+        #     #     self.param_names.remove('b0')
+            
+        #     self.cov = pd.DataFrame(self.covariance_parameters, index=self.param_names, columns=self.param_names)  
+
+        # else:
+        #     self.cov = None
+    
+        return None #number_of_variables
     
     def optimize(self, model, sigma_sq=None):
         """Handler for optimization using covariance or not"""
         
-        if self.covariance_method in ['k_aug', 'ipopt_sens']:
-            optimizer = SolverFactory(self.covariance_method)
-            for key, val in self.solver_opts.items():
-                optimizer.options[key] = val
-            self.covariance(optimizer, sigma_sq) 
-        else:
-            self._regular_optimization(model)
+        self.solver_opts['output_file'] = 'ipopt_output.txt'
+        self.solver_opts['file_print_level'] = 6
+        
+        if self.covariance_method == 'ipopt_sens':
             
+            method = solver_path('ipopt_sens')
+            optimizer = SolverFactory(method)
+            self.solver_opts.update({'compute_red_hessian': 'yes'})
+            for key, val in self.solver_opts.items():
+                #print(f'{key}: {value}')
+                optimizer.options[key] = val
+            # num_vars = self._regular_optimization(model, sigma_sq)
+            self.covariance(optimizer, sigma_sq)
+            
+        elif self.covariance_method == 'k_aug':
+            self._regular_optimization(model, sigma_sq)
+            self.covariance(sigma_sq=sigma_sq)
+            
+        elif self.covariance_method == 'pynumero':
+            self._regular_optimization(model, sigma_sq)
+            self.covariance(sigma_sq=sigma_sq)
+            
+        else:
+            self._regular_optimization(model, sigma_sq)
+        
         obj_val = model.objective.expr()
        
-        model.del_component('objective')
         if hasattr(model, 'D_bar'):
             model.del_component('D_bar')
         if hasattr(model,' D_bar_constraint'):
@@ -546,7 +859,7 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         return obj_val
     
     
-    def covariance(self, optimizer=None, sigma_sq=None):
+    def covariance(self, optimizer=None, sigma_sq=None, num_vars=None):
         """This consolidates the covariances methods into a convenient function
         
         :param SolverFactory optimizer: The solver (ipopt) used in k_aug
@@ -555,12 +868,20 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         :return: None
         
         """
-        if self.covariance_method == 'ipopt_sens':
+        self.cov = None
+        self.sigma_sq = sigma_sq
+        
+        if self.covariance_method == 'pynumero':
+            self.inv_hessian, self.inv_hessian_reduced = covariance_matrix_single_model(self._reaction_model, use_sigma=True)
+        
+        elif self.covariance_method == 'k_aug':
+            self.inv_hessian, self.inv_hessian_reduced = covariance_k_aug(self._reaction_model)
+            
+        # Performs the optimization as well
+        elif self.covariance_method == 'ipopt_sens':
             self.inv_hessian, self.inv_hessian_reduced = covariance_sipopt(self.model, optimizer, self.comps['unknown_absorbance'], self.param_names_full)
             
-        elif self.covariance_method == 'k_aug':
-            self.inv_hessian, self.inv_hessian_reduced = covariance_k_aug(self.model, None, self.comps['unknown_absorbance'], self.param_names_full, self.ncp)
-            
+        # Account for C and S variables in spectral problems
         if hasattr(self.model, 'C'):
             from kipet.estimator_tools.reduced_hessian_methods import compute_covariance
             models_dict = {'reaction_model': self.model}
@@ -570,7 +891,12 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         else:
             self.covariance_parameters = self.inv_hessian_reduced
             
-        self.cov = pd.DataFrame(self.covariance_parameters, index=self.param_names, columns=self.param_names)  
+        # Define the covariance attribute
+        df_values = self.covariance_parameters
+        if isinstance(df_values, pd.DataFrame):
+            df_values = df_values.values
+        
+        self.cov = pd.DataFrame(df_values, index=self.param_names, columns=self.param_names)
     
         return None
     
@@ -715,7 +1041,7 @@ class ParameterEstimator(PEMixins, PyomoSimulator):
         # need to put in an optional running of the variance estimator for the new
         # parameter estiamtion run, or just use the previous full model run to initialize...
 
-        results, lof = run_param_est(new_template, nfe, ncp, sigmas, solver=solver)
+        results, lof = run_param_est(self._reaction_model, new_template, nfe, ncp, sigmas, solver=solver)
 
         return results
 
@@ -1022,7 +1348,7 @@ def construct_model_from_reduced_set(builder_clone, end_time, D):
     return opt_model
 
 
-def run_param_est(opt_model, nfe, ncp, sigmas, solver='ipopt'):
+def run_param_est(r_model, opt_model, nfe, ncp, sigmas, solver='ipopt'):
     """ Runs the parameter estimator for the selected subset
 
     :param ConcreteModel opt_model: The model that we wish to run the
@@ -1034,17 +1360,21 @@ def run_param_est(opt_model, nfe, ncp, sigmas, solver='ipopt'):
     :return lof: lack of fit results
 
     """
-    p_estimator = ParameterEstimator(opt_model)
+    # This needs to pass the reaction model and not the pyomo model
+    p_estimator = ParameterEstimator(r_model, opt_model)
     p_estimator.apply_discretization('dae.collocation', nfe=nfe, ncp=ncp, scheme='LAGRANGE-RADAU')
     options = dict()
 
     
 
     # These may not always solve, so we need to come up with a decent initialization strategy here
-    results_pyomo = p_estimator.run_opt('ipopt',
+    p_estimator.set_up('ipopt',
                                         tee=False,
                                         solver_opts=options,
                                         variances=sigmas)
+    
+    results_pyomo = p_estimator.run_opt(True, sigmas)
+    
     # else:
     #     results_pyomo = p_estimator.run_opt(solver,
     #                                         tee=False,

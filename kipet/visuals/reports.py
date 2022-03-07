@@ -5,13 +5,16 @@ Report generation class
 # Standard library imports
 from pathlib import Path
 import os
-import re 
+import re
+import warnings 
 import webbrowser
+from zipfile import ZipFile
 
 # Third party imports 
 from jinja2 import Environment, FileSystemLoader
 import pandas as pd
 from pytexit import py2tex
+
 
 def generate_template_file(templates_dir):
     """
@@ -47,13 +50,16 @@ def generate_template_file(templates_dir):
 
     return None
 
+
 class Report:
     
     """ This class contains the methods used to prepre model data for inclusion in the HTML report"""
     
-    def __init__(self, model_list):
+    def __init__(self, model_list, is_simulation=False):
         
         self.reactions = model_list # ReactionModels
+        # define the results object here
+        self.simulation = is_simulation
 
     @staticmethod
     def model_context(reaction_model):
@@ -121,8 +127,7 @@ class Report:
             
         return comps
     
-    @staticmethod
-    def parameter_context(reaction_model):
+    def parameter_context(self, reaction_model):
         """Prepares a dictionary of parameter model attributes
         
         :param ReactionModel reaction_model: A solved/simulated ReactionModel instance
@@ -133,7 +138,7 @@ class Report:
         """
         params = []
 
-        if reaction_model.models['p_model']:
+        if not self.simulation:
             results_obj = reaction_model.results
         else:
             results_obj = reaction_model.results_dict['simulator']
@@ -147,6 +152,7 @@ class Report:
             param_data['lb'] = param.bounds[0]
             param_data['ub'] = param.bounds[1]
             param_data['description'] = 'Not provided' if param.description is None else param.description
+            param_data['fixed'] = param.fixed
             params.append(param_data)
             
             if hasattr(reaction_model, 'p_model'):
@@ -159,9 +165,14 @@ class Report:
                 param_data['name'] = indx
                 param_data['units'] = reaction_model.unit_base.time
                 param_data['value'] = param.loc[0]
-                param_data['initial'] = reaction_model._s_model.time_step_change[indx].value
-                param_data['lb'] = reaction_model._s_model.time_step_change[indx].bounds[0]
-                param_data['ub'] = reaction_model._s_model.time_step_change[indx].bounds[1]
+                if hasattr(reaction_model, 's_model') and reaction_model.s_model is not None:
+                    param_data['initial'] = reaction_model.s_model.time_step_change[indx].value
+                    param_data['lb'] = reaction_model.s_model.time_step_change[indx].bounds[0]
+                    param_data['ub'] = reaction_model.s_model.time_step_change[indx].bounds[1]
+                else:
+                    param_data['initial'] = reaction_model.p_model.time_step_change[indx].value
+                    param_data['lb'] = reaction_model.p_model.time_step_change[indx].bounds[0]
+                    param_data['ub'] = reaction_model.p_model.time_step_change[indx].bounds[1]
                 param_data['description'] = 'Binary variable'
                 
                 if hasattr(reaction_model, 'p_model'):
@@ -270,6 +281,49 @@ class Report:
             
         return odes_new
     
+    
+    @staticmethod
+    def get_chart_file_dir(abs_name):
+        """Shortens the absolute paths to relative paths
+        
+        :param str abs_name: The absolute path name
+        
+        :return: The relative path
+        :rtype: pathlib.Path
+        
+        """        
+        file = Path(abs_name)
+        file_dir = file.parents[0].stem
+        new_path = Path('charts').joinpath(file_dir, file.name)
+        
+        return new_path.parent.joinpath(new_path.stem)
+        
+        # return new_path
+    
+    def create_zip_file(self, save_dir, charts_dir):
+        """This generates a ZIP object to hold the report and charts
+        
+        :param pathlib.Path save_dir: The current directory where results are saved
+        :param pathlib.Path chart_dir: The path to the charts
+        
+        :return: None
+        
+        """
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            folder = save_dir
+            filename = 'report'
+            chart_files = retrieve_file_paths(charts_dir)
+            output_file_name = folder.joinpath(f'{filename}.zip')
+            zip_obj = ZipFile(output_file_name, 'w')
+            zip_obj.write((save_dir / 'report.html').resolve(), 'report.html')
+            for file in chart_files:
+                file_path = self.get_chart_file_dir(file)
+                zip_obj.write(file, file_path)
+            zip_obj.close()
+        
+        return None
+
         
     def generate_report(self):
         """Generates a full HTML report for the KIPET model.
@@ -291,6 +345,10 @@ class Report:
         time = self.reactions[0].timestamp
         current_dir = Path(__file__).parent
         templates_dir = (current_dir / 'templates').resolve()
+        
+        if not templates_dir.is_dir():
+            templates_dir.mkdir()
+        
         generate_template_file(templates_dir)
 
         style_file = (templates_dir / 'report.css').resolve()
@@ -317,7 +375,8 @@ class Report:
             source_code = 'Not found or from a Jupyter Notebook'
         
         user_dir = Path(user_file).parent
-        filename = (user_dir / 'results' / f'{user_stem}-{time}' / 'report.html').resolve()
+        final_dir = (user_dir / 'results' / f'{user_stem}-{time}').resolve()
+        filename = (final_dir / 'report.html').resolve()
         
         env = Environment( loader = FileSystemLoader(templates_dir) )
 
@@ -326,7 +385,7 @@ class Report:
         problem_text = "This is an automatically generated report presenting the results found using KIPET."
              
         log_orig = (user_dir / f'log-{user_stem}-{time}.txt').resolve()
-        log_file = (user_dir / 'results' / f'{user_stem}-{time}' /  'log.txt').resolve()
+        log_file = (final_dir / 'log.txt').resolve()
         
         if log_orig.is_file():
             log_orig.rename(log_file)
@@ -339,22 +398,26 @@ class Report:
             name = reaction_model.name
             model_dict[name] = {}
             model_dict[name]['time'] = reaction_model.timestamp
-            charts_dir = (user_dir / 'results'/  f'{user_stem}-{time}' / 'charts' / f'{reaction_model.name}').resolve()
+            charts_dir = (final_dir / 'charts' / f'{reaction_model.name}').resolve()
             
             # Concentration profiles
-            model_dict[name]['chart_C_files'] = [x for x in charts_dir.glob(f'all-concentration-profiles{suffix}') if x.is_file()]
-            model_dict[name]['chart_S_files'] = [x for x in charts_dir.glob(f'absorbance-spectra-all{suffix}') if x.is_file()]
-            model_dict[name]['chart_U_files'] = sorted([x for x in charts_dir.glob(f'*state-profile{suffix}') if x.is_file()])
-            model_dict[name]['chart_Y_files'] = sorted([x for x in charts_dir.glob(f'*profile{suffix}') if x.is_file() and x not in model_dict[name]['chart_U_files']])
+            model_dict[name]['chart_C_files'] = [self.get_chart_file_dir(x) for x in charts_dir.glob(f'all-concentration-profiles{suffix}') if x.is_file()]
+            model_dict[name]['chart_S_files'] = [self.get_chart_file_dir(x) for x in charts_dir.glob(f'absorbance-spectra-all{suffix}') if x.is_file()]
+            model_dict[name]['chart_U_files'] = sorted([self.get_chart_file_dir(x) for x in charts_dir.glob(f'*state-profile{suffix}') if x.is_file()])
+            model_dict[name]['chart_Y_files'] = sorted([self.get_chart_file_dir(x) for x in charts_dir.glob(f'*profile{suffix}') if x.is_file() and x not in model_dict[name]['chart_U_files']])
 
             data_chart_files = None
             spectral_info = None
             spectra_file = None
             
+            #print(f'{model_dict[name]["chart_U_files"] = }')
+            #print(f'{model_dict[name]["chart_Y_files"] = }')
+            
+            
             if reaction_model.spectra is not None:
                 spectra_file = reaction_model.spectra.file if reaction_model.spectra.file is not None else 'Not provided or custom'
                 data_chart_files = reaction_model._plot_object._plot_input_D_data()
-                data_chart_files = f'{data_chart_files}{suffix}'
+                data_chart_files = f'{data_chart_files}'#'{suffix}'
                 
                 sd = reaction_model.spectra
                 spectral_info = []
@@ -389,7 +452,7 @@ class Report:
             model_dict[name]['variances'] = reaction_model.variances
 
 
-            if reaction_model.models['p_model']:
+            if not self.simulation:
                 results_obj = reaction_model.results
             else:
                 results_obj = reaction_model.results_dict['simulator']
@@ -481,16 +544,17 @@ class Report:
                 
             res_chart_files = None
             par_chart_files = None
+            
             if reaction_model._builder._concentration_data is not None:
                 res_chart_files = reaction_model._plot_object._plot_Z_residuals()
                 par_chart_files = reaction_model._plot_object._plot_Z_parity()
                 
-            if reaction_model._builder._spectral_data is not None:
+            if reaction_model._builder._spectral_data is not None and not self.simulation:
                 res_chart_files = reaction_model._plot_object._plot_D_residuals()
                 par_chart_files = reaction_model._plot_object._plot_D_parity()
                 
-            model_dict[name]['res_chart'] = f'{res_chart_files}{suffix}'
-            model_dict[name]['par_chart'] = f'{par_chart_files}{suffix}'
+            model_dict[name]['res_chart'] = f'{res_chart_files}'#'{suffix}'
+            model_dict[name]['par_chart'] = f'{par_chart_files}'#'{suffix}'
             
             feeds = None
             dosing_dict = reaction_model._dosing_points
@@ -523,6 +587,7 @@ class Report:
                 time = time,
             ))
         
+        self.create_zip_file(final_dir, charts_dir)
         webbrowser.open('file://' + os.path.realpath(filename))
             
         return None
@@ -543,5 +608,21 @@ def dimensionless_check(units):
         return units.u
     
 
+def retrieve_file_paths(dir_name):
+ 
+  # setup file paths variable
+  filePaths = []
+   
+  # Read all directory, subdirectories and file lists
+  for root, directories, files in os.walk(dir_name):
+    for filename in files:
+        # Create the full filepath by using os module.
+        filePath = os.path.join(root, filename)
+        filePaths.append(filePath)
+         
+  # return all paths
+  return filePaths
+    
+    
 if __name__ == '__main__':
     pass

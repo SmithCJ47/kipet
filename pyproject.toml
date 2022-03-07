@@ -38,6 +38,7 @@ spyder = "^4.2.2"
 isort = "^5.8.0"
 mypy = "^0.812"
 sphinx-rtd-theme = "^0.5.2"
+snakeviz = "^2.1.0"
 
 [build-system]
 

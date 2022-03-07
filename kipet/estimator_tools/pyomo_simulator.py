@@ -1,11 +1,10 @@
 """
 This holds the class PyomoSimulator, which simply modifies a Pyomo model using various methods
 """
-
 # Third library import
 import numpy as np
 import pandas as pd
-from pyomo.environ import Suffix
+from pyomo.environ import Suffix, Var
 from pyomo.core.base import TransformationFactory
 from pyomo.opt import SolverFactory 
 
@@ -17,6 +16,7 @@ from kipet.model_tools.pyomo_model_tools import (get_index_sets,
                                                       index_set_info,
                                                       model_info)
 from kipet.general_settings.variable_names import VariableNames
+from kipet.general_settings.solver_settings import solver_path
 
 
 class PyomoSimulator:
@@ -41,6 +41,12 @@ class PyomoSimulator:
         # Creates a scaling factor suffix
         if not hasattr(self.model, 'scaling_factor'):
             self.model.scaling_factor = Suffix(direction=Suffix.EXPORT)
+            
+        # New apply scaling to each variable (no longer None)
+            for var in self.model.component_map(Var):
+                self.model.scaling_factor[getattr(self.model, var)] = 1
+                   
+            
             
         self.comps = {}
         if hasattr(self.model, 'abs_components'):
@@ -111,6 +117,8 @@ class PyomoSimulator:
             #             else:
             #                 dfallpsall.loc[ti] = float(dfallps[p][ti])
 
+            
+
             self._default_initialization()
             
             # if hasattr(self.model, 'K'):
@@ -118,7 +126,7 @@ class PyomoSimulator:
             #     self.scale_parameters()
             
         else:
-            print('***WARNING: Model already discretized. Ignoring second discretization')
+            print('\tWARNING: Model already discretized. Ignoring second discretization')
             
     def scale_model(self):
         """Method to scale the model parameters
@@ -208,6 +216,7 @@ class PyomoSimulator:
 
         """
         tol = 1e-4
+        init_val = 1
         
         if hasattr(self.model, self.__var.concentration_model):
             z_init = []
@@ -216,7 +225,7 @@ class PyomoSimulator:
                     if abs(self.model.init_conditions[k].value) > tol:
                         z_init.append(self.model.init_conditions[k].value)
                     else:
-                        z_init.append(1.0)
+                        z_init.append(init_val)
     
             z_array = np.array(z_init).reshape((self._n_alltimes, self._n_components))
             z_init_panel = pd.DataFrame(data=z_array,
@@ -235,7 +244,7 @@ class PyomoSimulator:
                     if abs(self.model.init_conditions[k].value) > tol:
                         c_init.append(self.model.init_conditions[k].value)
                     else:
-                        c_init.append(1.0)
+                        c_init.append(init_val)
                     #else: c_init.append(float('nan')) #added for new huplc structure!
 
         if self.model.allmeas_times:
@@ -258,7 +267,7 @@ class PyomoSimulator:
                     if abs(self.model.init_conditions[k].value) > tol:
                         x_init.append(self.model.init_conditions[k].value)
                     else:
-                        x_init.append(1.0)
+                        x_init.append(init_val)
     
             x_array = np.array(x_init).reshape((self._n_alltimes, self._n_complementary_states))
             x_init_panel = pd.DataFrame(data=x_array,
@@ -266,6 +275,23 @@ class PyomoSimulator:
                                         index=self._alltimes)
 
             self.initialize_from_trajectory(self.__var.state_model, x_init_panel)
+            
+            
+            
+        if hasattr(self.model, self.__var.algebraic):
+            x_init = []
+            for t in self._alltimes:
+                for k in self.model.alg_init_dict.keys():
+                    x_init.append(self.model.alg_init_dict[k])
+    
+            x_array = np.array(x_init).reshape((self._n_alltimes, len(self.model.alg_init_dict)))
+            x_init_panel = pd.DataFrame(data=x_array,
+                                        columns=self.model.alg_init_dict.keys(),
+                                        index=self._alltimes)
+
+            self.initialize_from_trajectory(self.__var.algebraic, x_init_panel)
+            
+            
 
     def initialize_parameters(self, params):
         """Initialize the parameters given a dict of parameter values
@@ -327,19 +353,21 @@ class PyomoSimulator:
         if not self.model.alltime.get_discretization_info():
             raise RuntimeError('apply discretization first before initializing')
             
-        var = getattr(self.model, variable_name)
-        inner_set, component_set = self.build_sets_new(variable_name, trajectories)
-       
-        if inner_set is None and component_set is None:
-            return None
-
-        for component in component_set:
-            if component in trajectories.columns:
-                single_trajectory = trajectories[component]
-                values = interpolate_trajectory(inner_set, single_trajectory)
-                for i, t in enumerate(inner_set):
-                    if not np.isnan(values[i]):
-                        var[t, component].value = values[i]
+        if hasattr(self.model, variable_name):
+        
+            var = getattr(self.model, variable_name)
+            inner_set, component_set = self.build_sets_new(variable_name, trajectories)
+           
+            if inner_set is None and component_set is None:
+                return None
+    
+            for component in component_set:
+                if component in trajectories.columns:
+                    single_trajectory = trajectories[component]
+                    values = interpolate_trajectory(inner_set, single_trajectory)
+                    for i, t in enumerate(inner_set):
+                        if not np.isnan(values[i]):
+                            var[t, component].value = values[i]
 
         return None
 
@@ -404,15 +432,19 @@ class PyomoSimulator:
         if not self.model.alltime.get_discretization_info():
             raise RuntimeError('apply discretization first before runing simulation')
 
+        self.add_warm_start_suffixes(self.model)
+
         np.random.seed(seed)
-        opt = SolverFactory(solver)
+        opt = SolverFactory(solver_path(solver))
         for key, val in solver_opts.items():
             opt.options[key] = val
+            
+            
+        #print(self.model.P.display())
             
         solver_results = opt.solve(self.model, tee=tee, symbolic_solver_labels=True)
         results = ResultsObject()
         results.load_from_pyomo_model(self.model)
-
         return results
    
     @staticmethod

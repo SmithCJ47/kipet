@@ -182,6 +182,27 @@ def convert(var):
     return var_data
         
         
+def to_dict(var):
+    
+    if var.dim() == 1:
+        var_dataframe = convert(var)
+        return var_dataframe.to_dict()
+    
+    elif var.dim() == 2:
+        var_data = convert(var)
+        var_dict = var_data.to_dict()
+        new_var_dict = {}
+        
+        for key, value in var_dict.items():
+            for key2, value2 in value.items():
+                new_key = (key2, key)
+                new_var_dict[new_key] = value2
+    
+        return new_var_dict
+    
+    else:
+        raise ValueError("Not implemented for dimensions other than 1 or 2.")
+        
 def _prepare_data_for_init(var):
         """Convert results dict into DataFrame for initialization.
         
@@ -309,3 +330,15 @@ def model_info(model):
     model_attrs['smoothparam_given'] = hasattr(model, __var.smooth_parameter)
                 
     return model_attrs
+
+    
+
+
+
+
+
+
+
+
+
+
